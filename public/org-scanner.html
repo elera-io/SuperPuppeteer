@@ -1,0 +1,1442 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SuperPuppeteer — Org Scanner</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg-1: #081424;
+        --bg-2: #10233c;
+        --bg-3: #1c3455;
+        --surface-1: rgba(255,255,255,0.08);
+        --surface-2: rgba(255,255,255,0.12);
+        --surface-3: rgba(255,255,255,0.16);
+        --stroke-soft: rgba(255,255,255,0.18);
+        --stroke-strong: rgba(255,255,255,0.3);
+        --text-main: #f7fbff;
+        --text-muted: rgba(231,241,255,0.74);
+        --accent: #ffb34f;
+        --accent-strong: #ff8f47;
+        --accent-soft: rgba(255,179,79,0.24);
+        --success: #39d7b5;
+        --warning: #f5d56a;
+        --danger: #f46c63;
+        --focus: #89c4ff;
+        --info: #6eb5ff;
+        --radius-card: 20px;
+        --radius-field: 12px;
+        --shadow-card: 0 20px 54px rgba(2,10,18,0.45);
+        --shadow-soft: 0 8px 22px rgba(4,12,24,0.3);
+      }
+
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+
+      body {
+        font-family: 'IBM Plex Sans', system-ui, sans-serif;
+        color: var(--text-main);
+        background:
+          radial-gradient(1300px 760px at -10% -20%, #2a4f7a 0%, transparent 52%),
+          radial-gradient(980px 640px at 110% -12%, #214c79 0%, transparent 48%),
+          linear-gradient(135deg, var(--bg-1), var(--bg-2) 42%, var(--bg-3));
+        min-height: 100vh;
+        line-height: 1.4;
+      }
+
+      h1, h2, h3 { font-family: 'Space Grotesk', sans-serif; font-weight: 600; letter-spacing: 0.01em; }
+
+      .app {
+        max-width: 1500px;
+        margin: 0 auto;
+        padding: 28px 26px 80px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+
+      /* ─── HEADER ─── */
+      .top {
+        display: grid;
+        grid-template-columns: minmax(0,1fr) 300px;
+        gap: 18px;
+        align-items: start;
+      }
+
+      .brand-panel {
+        background: linear-gradient(160deg,rgba(255,255,255,0.12),rgba(255,255,255,0.07));
+        border: 1px solid var(--stroke-soft);
+        border-radius: var(--radius-card);
+        padding: 18px 22px;
+        box-shadow: var(--shadow-card);
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+
+      .brand-icon {
+        width: 64px; height: 64px;
+        border-radius: 16px;
+        background: rgba(255,255,255,0.1);
+        border: 1px solid var(--stroke-strong);
+        display: grid; place-items: center;
+        flex-shrink: 0;
+      }
+
+      .brand-icon svg { width: 48px; height: 48px; }
+
+      .brand-title { font-size: 1.8rem; font-weight: 700; }
+      .brand-breadcrumb {
+        display: flex; align-items: center; gap: 8px;
+        margin-top: 4px; font-size: 0.9rem; color: var(--text-muted);
+      }
+      .brand-breadcrumb a {
+        color: var(--accent); text-decoration: none;
+        transition: opacity 0.15s;
+      }
+      .brand-breadcrumb a:hover { opacity: 0.75; }
+      .brand-breadcrumb .sep { opacity: 0.4; }
+
+      /* Org Status card */
+      .org-status-card {
+        background: linear-gradient(165deg,rgba(255,255,255,0.13),rgba(255,255,255,0.08));
+        border: 1px solid var(--stroke-soft);
+        border-radius: var(--radius-card);
+        padding: 16px;
+        box-shadow: var(--shadow-card);
+        display: grid;
+        gap: 10px;
+        position: sticky;
+        top: 14px;
+      }
+
+      .status-eyebrow {
+        font-size: 0.72rem; text-transform: uppercase;
+        letter-spacing: 0.14em; color: var(--text-muted);
+      }
+
+      .org-pill {
+        padding: 9px 14px;
+        border-radius: 999px;
+        font-size: 0.83rem; font-weight: 700;
+        letter-spacing: 0.08em; text-transform: uppercase;
+        text-align: center;
+        background: rgba(255,255,255,0.1);
+        border: 1px solid rgba(255,255,255,0.2);
+        transition: all 0.3s ease;
+      }
+      .org-pill.connected {
+        background: rgba(57,215,181,0.2);
+        border-color: rgba(57,215,181,0.62);
+        color: var(--success);
+      }
+      .org-pill.scanning {
+        background: var(--accent-soft);
+        border-color: rgba(255,179,79,0.64);
+        color: var(--accent);
+        animation: pulse-glow 1.4s ease-in-out infinite;
+      }
+      .org-pill.error {
+        background: rgba(244,108,99,0.2);
+        border-color: rgba(244,108,99,0.64);
+        color: var(--danger);
+      }
+
+      @keyframes pulse-glow {
+        0%,100% { box-shadow: 0 0 0 0 rgba(255,179,79,0); }
+        50% { box-shadow: 0 0 16px 4px rgba(255,179,79,0.3); }
+      }
+
+      .meta-row {
+        display: flex; justify-content: space-between;
+        align-items: center; font-size: 0.85rem;
+      }
+      .meta-row .label { color: var(--text-muted); }
+      .meta-row .value { font-weight: 600; font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; }
+
+      /* ─── CONNECT BAR ─── */
+      .connect-bar {
+        background: linear-gradient(160deg,rgba(255,255,255,0.1),rgba(255,255,255,0.06));
+        border: 1px solid var(--stroke-soft);
+        border-radius: var(--radius-card);
+        padding: 18px 22px;
+        box-shadow: var(--shadow-card);
+        display: grid;
+        gap: 14px;
+        animation: lift 0.4s ease forwards;
+        opacity: 0;
+      }
+
+      .connect-bar-head {
+        display: flex; align-items: center; gap: 10px;
+      }
+
+      .eyebrow {
+        font-size: 0.72rem; text-transform: uppercase;
+        letter-spacing: 0.14em; color: var(--text-muted);
+      }
+
+      .connect-fields {
+        display: grid;
+        grid-template-columns: 2fr 1fr 2fr auto;
+        gap: 10px;
+        align-items: end;
+      }
+
+      .field-group { display: flex; flex-direction: column; gap: 5px; }
+      .field-label { font-size: 0.78rem; color: var(--text-muted); font-weight: 500; }
+
+      input {
+        border-radius: var(--radius-field);
+        border: 1px solid var(--stroke-strong);
+        background: rgba(8,19,33,0.58);
+        color: var(--text-main);
+        padding: 10px 12px;
+        font-size: 0.9rem;
+        font-family: 'IBM Plex Sans', sans-serif;
+        width: 100%;
+        transition: border-color 0.2s ease;
+      }
+      input::placeholder { color: rgba(224,236,250,0.4); }
+      input:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
+      input[type="password"] { font-family: 'IBM Plex Mono', monospace; letter-spacing: 0.1em; }
+
+      button {
+        font-family: 'Space Grotesk', sans-serif;
+        font-size: 0.86rem; font-weight: 600;
+        letter-spacing: 0.01em;
+        padding: 10px 16px;
+        border-radius: var(--radius-field);
+        border: 1px solid transparent;
+        color: var(--text-main);
+        background: rgba(255,255,255,0.12);
+        cursor: pointer;
+        transition: background 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+        white-space: nowrap;
+      }
+      button:hover { transform: translateY(-1px); background: rgba(255,255,255,0.2); }
+      button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+      button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+      button.primary {
+        color: #152434;
+        border-color: rgba(255,210,150,0.55);
+        background: linear-gradient(135deg,var(--accent),var(--accent-strong));
+      }
+      button.primary:hover { box-shadow: 0 4px 18px rgba(255,179,79,0.4); }
+
+      button.danger {
+        background: rgba(244,108,99,0.2);
+        border-color: rgba(244,108,99,0.6);
+        color: #ffe0de;
+      }
+
+      /* ─── SCAN CONTROLS ─── */
+      .scan-section {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+        animation: lift 0.4s 0.1s ease forwards;
+        opacity: 0;
+      }
+
+      .card {
+        background: linear-gradient(165deg,var(--surface-2),var(--surface-1));
+        border: 1px solid var(--stroke-soft);
+        border-radius: var(--radius-card);
+        padding: 18px;
+        box-shadow: var(--shadow-card);
+        display: grid;
+        gap: 12px;
+      }
+
+      .card h2 { font-size: 1.05rem; }
+      .card .desc { font-size: 0.84rem; color: var(--text-muted); margin-top: -4px; }
+
+      .scan-btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+      .chip {
+        display: inline-flex; align-items: center;
+        padding: 4px 10px; border-radius: 999px;
+        background: rgba(255,255,255,0.12);
+        border: 1px solid rgba(255,255,255,0.18);
+        font-size: 0.72rem; text-transform: uppercase;
+        letter-spacing: 0.08em; color: rgba(247,251,255,0.85);
+      }
+      .chip.ai { background: rgba(255,179,79,0.2); border-color: rgba(255,179,79,0.5); color: var(--accent); }
+      .chip.live { background: rgba(57,215,181,0.18); border-color: rgba(57,215,181,0.5); color: var(--success); }
+
+      /* ─── RESULTS ─── */
+      .results-section {
+        display: flex; flex-direction: column; gap: 14px;
+        animation: lift 0.4s 0.18s ease forwards;
+        opacity: 0;
+      }
+
+      .results-header {
+        display: flex; align-items: center; gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .results-header h2 { font-size: 1.15rem; }
+
+      .filter-bar {
+        display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto;
+      }
+
+      .filter-btn {
+        padding: 6px 13px; border-radius: 999px;
+        font-size: 0.78rem; font-weight: 600;
+        border: 1px solid rgba(255,255,255,0.2);
+        background: rgba(255,255,255,0.08);
+        cursor: pointer; transition: all 0.18s ease;
+        color: var(--text-muted);
+      }
+      .filter-btn:hover { background: rgba(255,255,255,0.16); color: var(--text-main); }
+      .filter-btn.active {
+        background: rgba(255,179,79,0.2);
+        border-color: rgba(255,179,79,0.6);
+        color: var(--accent);
+      }
+
+      /* tabs */
+      .tabs {
+        display: flex; gap: 2px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid var(--stroke-soft);
+        border-radius: 14px; padding: 4px;
+        width: fit-content;
+      }
+
+      .tab-btn {
+        padding: 7px 18px; border-radius: 10px;
+        font-size: 0.83rem; font-weight: 600;
+        background: transparent; border: none;
+        color: var(--text-muted); cursor: pointer;
+        transition: all 0.2s ease;
+      }
+      .tab-btn:hover { color: var(--text-main); }
+      .tab-btn.active {
+        background: rgba(255,255,255,0.14);
+        color: var(--text-main);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      }
+
+      /* Results grid */
+      .results-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+
+      /* Flow / Field result cards */
+      .result-card {
+        background: linear-gradient(160deg,rgba(255,255,255,0.09),rgba(255,255,255,0.05));
+        border: 1px solid var(--stroke-soft);
+        border-radius: 16px;
+        padding: 14px 16px;
+        display: grid; gap: 10px;
+        transition: border-color 0.2s, transform 0.2s;
+      }
+      .result-card:hover { border-color: var(--stroke-strong); transform: translateY(-1px); }
+
+      .result-card.risk-high { border-left: 3px solid var(--danger); }
+      .result-card.risk-medium { border-left: 3px solid var(--warning); }
+      .result-card.risk-low { border-left: 3px solid var(--success); }
+
+      .result-head {
+        display: flex; align-items: flex-start;
+        justify-content: space-between; gap: 10px;
+      }
+
+      .result-title {
+        font-size: 0.95rem; font-weight: 600;
+        font-family: 'Space Grotesk', sans-serif;
+      }
+      .result-meta {
+        font-size: 0.79rem; color: var(--text-muted);
+        margin-top: 2px;
+      }
+
+      .badge {
+        display: inline-flex; align-items: center;
+        padding: 4px 10px; border-radius: 999px;
+        font-size: 0.72rem; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 0.06em;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .badge.high { background: rgba(244,108,99,0.2); border: 1px solid rgba(244,108,99,0.5); color: var(--danger); }
+      .badge.medium { background: rgba(245,213,106,0.2); border: 1px solid rgba(245,213,106,0.5); color: var(--warning); }
+      .badge.low { background: rgba(57,215,181,0.15); border: 1px solid rgba(57,215,181,0.4); color: var(--success); }
+      .badge.info { background: rgba(110,181,255,0.15); border: 1px solid rgba(110,181,255,0.4); color: var(--info); }
+
+      /* AI analysis block */
+      .ai-block {
+        background: rgba(255,179,79,0.07);
+        border: 1px solid rgba(255,179,79,0.2);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 0.83rem;
+        line-height: 1.6;
+        color: rgba(247,251,255,0.9);
+        display: none;
+      }
+      .ai-block.visible { display: block; }
+
+      .ai-block .ai-label {
+        font-size: 0.7rem; text-transform: uppercase;
+        letter-spacing: 0.12em; color: var(--accent);
+        font-weight: 700; margin-bottom: 5px;
+        display: flex; align-items: center; gap: 5px;
+      }
+
+      .ai-typing {
+        display: inline-block;
+        width: 6px; height: 14px;
+        background: var(--accent);
+        border-radius: 2px;
+        animation: blink 0.9s step-end infinite;
+        vertical-align: middle;
+        margin-left: 3px;
+      }
+
+      @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+      .result-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+      .result-actions button {
+        padding: 5px 11px; border-radius: 9px;
+        font-size: 0.77rem;
+        background: rgba(255,255,255,0.1);
+      }
+      .result-actions button:hover { background: rgba(255,255,255,0.18); }
+
+      /* fields list inside flow card */
+      .fields-list {
+        display: flex; flex-wrap: wrap; gap: 5px;
+        padding-top: 2px;
+      }
+      .field-tag {
+        display: inline-flex; align-items: center;
+        padding: 3px 9px; border-radius: 8px;
+        background: rgba(255,255,255,0.1);
+        font-size: 0.76rem; font-family: 'IBM Plex Mono', monospace;
+        color: rgba(231,241,255,0.8);
+        gap: 5px;
+      }
+      .field-tag.unused { background: rgba(244,108,99,0.15); color: #ffb8b5; }
+      .field-tag.duplicate { background: rgba(245,213,106,0.15); color: #f5e090; }
+
+      /* ─── SUMMARY PANEL ─── */
+      .summary-strip {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+        animation: lift 0.4s 0.06s ease forwards;
+        opacity: 0;
+      }
+
+      .stat-card {
+        background: linear-gradient(160deg,rgba(255,255,255,0.1),rgba(255,255,255,0.06));
+        border: 1px solid var(--stroke-soft);
+        border-radius: 16px;
+        padding: 14px 16px;
+        display: grid; gap: 4px;
+      }
+      .stat-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); }
+      .stat-value { font-size: 2rem; font-weight: 700; font-family: 'Space Grotesk', sans-serif; line-height: 1; }
+      .stat-sub { font-size: 0.78rem; color: var(--text-muted); }
+
+      /* empty state */
+      .empty-state {
+        grid-column: 1 / -1;
+        text-align: center;
+        padding: 48px 20px;
+        color: var(--text-muted);
+        border: 1px dashed rgba(255,255,255,0.15);
+        border-radius: 16px;
+      }
+      .empty-state .icon { font-size: 2.5rem; margin-bottom: 12px; }
+      .empty-state p { font-size: 0.9rem; }
+
+      /* ─── Loading skeleton ─── */
+      .skeleton {
+        border-radius: 8px;
+        background: linear-gradient(90deg,
+          rgba(255,255,255,0.06) 25%,
+          rgba(255,255,255,0.12) 50%,
+          rgba(255,255,255,0.06) 75%
+        );
+        background-size: 400% 100%;
+        animation: shimmer 1.4s ease infinite;
+        height: 16px;
+      }
+      @keyframes shimmer { 0%{background-position:100% 0} 100%{background-position:-100% 0} }
+
+      /* Progress bar */
+      .progress-bar-wrap {
+        background: rgba(255,255,255,0.08);
+        border-radius: 999px; height: 4px; overflow: hidden;
+        display: none;
+      }
+      .progress-bar-wrap.visible { display: block; }
+      .progress-bar-fill {
+        height: 100%; border-radius: 999px;
+        background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+        transition: width 0.4s ease;
+      }
+
+      /* notification toast */
+      .toast-area {
+        position: fixed; bottom: 24px; right: 24px;
+        display: flex; flex-direction: column; gap: 8px;
+        z-index: 200;
+      }
+      .toast {
+        padding: 11px 16px; border-radius: 12px;
+        font-size: 0.84rem; font-weight: 500;
+        background: rgba(15,30,50,0.95);
+        border: 1px solid var(--stroke-soft);
+        box-shadow: var(--shadow-card);
+        backdrop-filter: blur(12px);
+        animation: slide-in 0.3s ease;
+        max-width: 320px;
+      }
+      .toast.success { border-color: rgba(57,215,181,0.5); color: var(--success); }
+      .toast.error { border-color: rgba(244,108,99,0.5); color: var(--danger); }
+      .toast.info { border-color: rgba(255,179,79,0.5); color: var(--accent); }
+
+      @keyframes slide-in { from{opacity:0;transform:translateX(20px)} to{opacity:1;transform:translateX(0)} }
+      @keyframes lift { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+
+      /* ─── RESPONSIVE ─── */
+      @media (max-width: 1100px) {
+        .top { grid-template-columns: 1fr; }
+        .results-grid { grid-template-columns: 1fr; }
+        .scan-section { grid-template-columns: 1fr 1fr; }
+        .summary-strip { grid-template-columns: repeat(2,1fr); }
+      }
+      @media (max-width: 700px) {
+        .app { padding: 16px 12px 60px; }
+        .scan-section { grid-template-columns: 1fr; }
+        .summary-strip { grid-template-columns: repeat(2,1fr); }
+        .connect-fields { grid-template-columns: 1fr; }
+        .filter-bar { margin-left: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+
+      <!-- ─── HEADER ─── -->
+      <header class="top">
+        <div class="brand-panel">
+          <div class="brand-icon">
+            <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="32" cy="32" r="28" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/>
+              <path d="M20 24h24M20 32h16M20 40h20" stroke="#ffb34f" stroke-width="2.5" stroke-linecap="round"/>
+              <circle cx="48" cy="40" r="8" fill="#10233c" stroke="#39d7b5" stroke-width="2"/>
+              <path d="M45 40l2 2 4-4" stroke="#39d7b5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div>
+            <div class="brand-title">Org Scanner</div>
+            <div class="brand-breadcrumb">
+              <a href="/">SuperPuppeteer</a>
+              <span class="sep">›</span>
+              <span>Análise de Org</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="org-status-card">
+          <p class="status-eyebrow">Status da Org</p>
+          <div class="org-pill" id="orgPill">Não conectado</div>
+          <div id="orgMetaArea">
+            <div class="meta-row">
+              <span class="label">Org ID</span>
+              <span class="value" id="orgIdVal">—</span>
+            </div>
+            <div class="meta-row">
+              <span class="label">Usuário</span>
+              <span class="value" id="orgUserVal">—</span>
+            </div>
+            <div class="meta-row">
+              <span class="label">Email</span>
+              <span class="value" id="orgEmailVal">—</span>
+            </div>
+            <div class="meta-row">
+              <span class="label">Flows encontrados</span>
+              <span class="value" id="flowCountVal">—</span>
+            </div>
+            <div class="meta-row">
+              <span class="label">Último scan</span>
+              <span class="value" id="lastScanVal">—</span>
+            </div>
+          </div>
+          <div class="progress-bar-wrap" id="scanProgressWrap">
+            <div class="progress-bar-fill" id="scanProgressBar" style="width:0%"></div>
+          </div>
+        </div>
+      </header>
+
+      <!-- ─── CONNECT BAR ─── -->
+      <div class="connect-bar" id="connectBar">
+        <div class="connect-bar-head">
+          <p class="eyebrow">Conexão com a Salesforce Org</p>
+          <span class="chip">REST API · Tooling API</span>
+        </div>
+        <div class="connect-fields">
+          <div class="field-group">
+            <label class="field-label" for="sfInstanceUrl">Instance URL</label>
+            <input id="sfInstanceUrl" type="text" placeholder="https://myorg.my.salesforce.com" />
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="sfApiVersion">API Version</label>
+            <input id="sfApiVersion" type="text" value="v60.0" />
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="sfToken">Access Token / Session ID</label>
+            <input id="sfToken" type="password" placeholder="00D... Bearer token ou Session ID" />
+          </div>
+          <button class="primary" id="connectBtn">Conectar</button>
+        </div>
+        <p style="font-size:0.8rem;color:var(--text-muted)">
+          💡 Use <code style="font-family:'IBM Plex Mono',monospace;font-size:0.78rem;color:var(--accent)">sfdx force:org:display --verbose</code>
+          para obter o Access Token da sua org de dev/sandbox.
+        </p>
+      </div>
+
+      <!-- ─── SUMMARY STRIP ─── -->
+      <div class="summary-strip" id="summaryStrip" style="display:none">
+        <div class="stat-card">
+          <p class="stat-label">Flows ativos</p>
+          <p class="stat-value" id="statFlows">0</p>
+          <p class="stat-sub">encontrados na org</p>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Campos referenciados</p>
+          <p class="stat-value" id="statFields">0</p>
+          <p class="stat-sub">em todos os flows</p>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Potenciais problemas</p>
+          <p class="stat-value" id="statIssues" style="color:var(--warning)">0</p>
+          <p class="stat-sub">identificados pela IA</p>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Candidatos a exclusão</p>
+          <p class="stat-value" id="statDelete" style="color:var(--danger)">0</p>
+          <p class="stat-sub">flows inativos / obsoletos</p>
+        </div>
+      </div>
+
+      <!-- ─── SCAN CONTROLS ─── -->
+      <div class="scan-section" id="scanSection" style="display:none">
+        <div class="card">
+          <p class="eyebrow">Análise de Flows</p>
+          <h2>Scanner de Flows</h2>
+          <p class="desc">Lê todos os Flow Definitions da org via Tooling API e extrai metadados de elementos, campos e versões.</p>
+          <div class="scan-btn-row">
+            <button class="primary" id="scanFlowsBtn">🔍 Escanear Flows</button>
+            <button id="scanActiveOnlyBtn">Só ativos</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <p class="eyebrow">Análise de Campos</p>
+          <h2>Campo Ativo vs. Morto</h2>
+          <p class="desc">Cruza campos de um objeto com referências em Flows, Apex, Layouts e ValidationRules para detectar campos sem uso.</p>
+          <div class="scan-btn-row">
+            <input id="objectInput" type="text" placeholder="Ex: Opportunity" style="min-width:0;flex:1" />
+            <button id="scanFieldsBtn">🔎 Analisar</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <p class="eyebrow">Campos em Flows</p>
+          <h2>Campos Referenciados</h2>
+          <p class="desc">Lê o metadado completo de cada flow via Tooling API e extrai todos os campos (API names) efetivamente referenciados.</p>
+          <div class="scan-btn-row">
+            <button id="scanFlowFieldsBtn">🔗 Escanear campos nos flows</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <p class="eyebrow">IA · Refatoração</p>
+          <h2>Análise com Claude</h2>
+          <p class="desc">Envia os metadados escaneados para a IA e recebe sugestões de refatoração, exclusão e arquitetura.</p>
+          <div class="scan-btn-row">
+            <button class="primary" id="analyzeAllBtn">🤖 Analisar com IA</button>
+            <span class="chip ai">Claude Sonnet</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ─── RESULTS ─── -->
+      <div class="results-section" id="resultsSection" style="display:none">
+        <div class="results-header">
+          <h2>Resultados da Análise</h2>
+          <div class="tabs">
+            <button class="tab-btn active" data-tab="flows">Flows</button>
+            <button class="tab-btn" data-tab="fields">Campos</button>
+            <button class="tab-btn" data-tab="flow-fields">Campos em Flows</button>
+            <button class="tab-btn" data-tab="ai">IA · Recomendações</button>
+          </div>
+          <div class="filter-bar">
+            <button class="filter-btn active" data-filter="all">Todos</button>
+            <button class="filter-btn" data-filter="high">🔴 Alto risco</button>
+            <button class="filter-btn" data-filter="medium">🟡 Médio</button>
+            <button class="filter-btn" data-filter="low">🟢 Baixo</button>
+          </div>
+        </div>
+
+        <!-- Flows tab -->
+        <div id="tabFlows" class="results-grid"></div>
+
+        <!-- Fields tab -->
+        <div id="tabFields" class="results-grid" style="display:none"></div>
+
+        <!-- Flow-Fields tab -->
+        <div id="tabFlowFields" class="results-grid" style="display:none"></div>
+
+        <!-- AI tab -->
+        <div id="tabAi" style="display:none">
+          <div class="card" style="gap:16px">
+            <div style="display:flex;align-items:center;gap:10px">
+              <span class="chip ai">🤖 Claude Sonnet</span>
+              <span style="font-size:0.84rem;color:var(--text-muted)" id="aiStatusText">Aguardando análise...</span>
+            </div>
+            <div id="aiReportContent" style="font-size:0.88rem;line-height:1.75;color:rgba(247,251,255,0.9);white-space:pre-wrap"></div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /app -->
+
+    <div class="toast-area" id="toastArea"></div>
+
+    <script>
+    // ─── STATE ──────────────────────────────────────────────────────────────────
+    const appState = {
+      connected: false,
+      instanceUrl: '',
+      token: '',
+      apiVersion: 'v60.0',
+      flows: [],
+      fieldAnalysis: [],
+      flowFields: {},
+      aiReport: '',
+      activeFilter: 'all',
+      activeTab: 'flows',
+      scanning: false,
+    };
+
+    // ─── ELEMENTS ─────────────────────────────────────────────────────────────
+    const orgPill         = document.getElementById('orgPill');
+    const orgIdVal        = document.getElementById('orgIdVal');
+    const orgUserVal      = document.getElementById('orgUserVal');
+    const orgEmailVal     = document.getElementById('orgEmailVal');
+    const flowCountVal    = document.getElementById('flowCountVal');
+    const lastScanVal     = document.getElementById('lastScanVal');
+    const scanProgressWrap= document.getElementById('scanProgressWrap');
+    const scanProgressBar = document.getElementById('scanProgressBar');
+    const summaryStrip    = document.getElementById('summaryStrip');
+    const scanSection     = document.getElementById('scanSection');
+    const resultsSection  = document.getElementById('resultsSection');
+    const tabFlows        = document.getElementById('tabFlows');
+    const tabFields       = document.getElementById('tabFields');
+    const tabFlowFields   = document.getElementById('tabFlowFields');
+    const tabAi           = document.getElementById('tabAi');
+    const aiReportContent = document.getElementById('aiReportContent');
+    const aiStatusText    = document.getElementById('aiStatusText');
+    const toastArea       = document.getElementById('toastArea');
+
+    // ─── TOAST ────────────────────────────────────────────────────────────────
+    function toast(msg, type = 'info', duration = 3500) {
+      const el = document.createElement('div');
+      el.className = `toast ${type}`;
+      el.textContent = msg;
+      toastArea.appendChild(el);
+      setTimeout(() => el.remove(), duration);
+    }
+
+    // ─── PROGRESS ─────────────────────────────────────────────────────────────
+    function setProgress(pct) {
+      scanProgressWrap.classList.toggle('visible', pct > 0 && pct < 100);
+      scanProgressBar.style.width = `${pct}%`;
+    }
+
+    function setOrgPillState(state) {
+      orgPill.className = 'org-pill ' + state;
+      const labels = { connected:'Conectado', scanning:'Escaneando…', error:'Erro', '':'Não conectado' };
+      orgPill.textContent = labels[state] || 'Não conectado';
+    }
+
+    // ─── CONNECT ──────────────────────────────────────────────────────────────
+    document.getElementById('connectBtn').addEventListener('click', async () => {
+      const url   = document.getElementById('sfInstanceUrl').value.trim().replace(/\/$/, '');
+      const token = document.getElementById('sfToken').value.trim();
+      const ver   = document.getElementById('sfApiVersion').value.trim() || 'v60.0';
+
+      if (!url || !token) { toast('Preencha a Instance URL e o Access Token.', 'error'); return; }
+
+      setOrgPillState('scanning');
+      toast('Verificando conexão com a org…', 'info');
+
+      try {
+        // Validate by calling /limits endpoint via Salesforce REST
+        const res = await sfFetch(`${url}/services/data/${ver}/limits`, token);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        appState.connected = true;
+        appState.instanceUrl = url;
+        appState.token = token;
+        appState.apiVersion = ver;
+
+        setOrgPillState('connected');
+        flowCountVal.textContent = '—';
+        lastScanVal.textContent = new Date().toLocaleTimeString('pt-BR');
+
+        // Busca nome, email e org ID via userinfo
+        try {
+          const uiRes = await sfFetch(`${url}/services/oauth2/userinfo`, token);
+          if (uiRes.ok) {
+            const ui = await uiRes.json();
+            orgIdVal.textContent   = ui.organization_id || '—';
+            orgUserVal.textContent = ui.name            || ui.preferred_username || '—';
+            orgEmailVal.textContent= ui.email           || '—';
+          } else {
+            orgIdVal.textContent = '—';
+          }
+        } catch {
+          orgIdVal.textContent = '—';
+        }
+
+        summaryStrip.style.display = 'grid';
+        scanSection.style.display  = 'grid';
+        toast('Org conectada com sucesso! 🎉', 'success');
+      } catch (err) {
+        setOrgPillState('error');
+        toast(`Erro ao conectar: ${err.message}`, 'error', 6000);
+      }
+    });
+
+    // Todas as chamadas ao Salesforce passam pelo proxy Node para evitar CORS
+    async function sfFetch(url, token, options = {}) {
+      return fetch('/api/sf-proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url,
+          token,
+          method: options.method || 'GET',
+          body: options.body || null,
+        }),
+      });
+    }
+
+    // ─── SCAN FLOWS ───────────────────────────────────────────────────────────
+    document.getElementById('scanFlowsBtn').addEventListener('click', () => scanFlows(false));
+    document.getElementById('scanActiveOnlyBtn').addEventListener('click', () => scanFlows(true));
+
+    async function scanFlows(activeOnly) {
+      if (!appState.connected) { toast('Conecte-se à org primeiro.', 'error'); return; }
+      if (appState.scanning) return;
+
+      appState.scanning = true;
+      setOrgPillState('scanning');
+      setProgress(10);
+      toast('Buscando Flow Definitions…', 'info');
+
+      try {
+        // Usa objeto Flow via Tooling API — funciona em todas as orgs (v50+)
+        // Traz apenas a versão mais recente de cada flow agrupando por MasterLabel
+        const statusFilter = activeOnly ? " AND Status = 'Active'" : " AND Status IN ('Active','Draft')";
+        const soql = encodeURIComponent(
+          `SELECT Id, MasterLabel, ProcessType, Status, LastModifiedDate, Description, VersionNumber
+           FROM Flow
+           WHERE ManageableState = 'unmanaged'${statusFilter}
+           ORDER BY MasterLabel ASC, VersionNumber DESC
+           LIMIT 200`
+        );
+
+        const url = `${appState.instanceUrl}/services/data/${appState.apiVersion}/tooling/query?q=${soql}`;
+        setProgress(30);
+        const res = await sfFetch(url, appState.token);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          const msg = errData?.[0]?.message || errData?.message || res.status;
+          throw new Error(`Tooling API retornou ${res.status}: ${msg}`);
+        }
+
+        const data = await res.json();
+        setProgress(60);
+
+        // Deduplica por MasterLabel mantendo a versão mais recente
+        const seen = new Set();
+        const flows = (data.records || [])
+          .filter(f => {
+            if (seen.has(f.MasterLabel)) return false;
+            seen.add(f.MasterLabel);
+            return true;
+          })
+          .map(f => ({
+            Id: f.Id,
+            DeveloperName: f.ApiName || f.MasterLabel,
+            MasterLabel: f.MasterLabel,
+            ProcessType: f.ProcessType,
+            Status: f.Status,
+            LastModifiedDate: f.LastModifiedDate,
+            Description: f.Description,
+            LatestVersion: f.VersionNumber,
+            LatestStatus: f.Status,
+            risk: computeFlowRisk(f, f),
+          }));
+        const enriched = flows;
+        setProgress(90);
+
+        appState.flows = enriched;
+        flowCountVal.textContent = `${enriched.length}`;
+        lastScanVal.textContent  = new Date().toLocaleTimeString('pt-BR');
+
+        updateSummary();
+        renderFlows();
+        resultsSection.style.display = 'flex';
+        switchTab('flows');
+        setProgress(100);
+        setTimeout(() => setProgress(0), 800);
+        setOrgPillState('connected');
+        toast(`${enriched.length} flows carregados com sucesso.`, 'success');
+      } catch (err) {
+        setOrgPillState('error');
+        setProgress(0);
+        toast(`Erro ao escanear flows: ${err.message}`, 'error', 7000);
+        console.error(err);
+      } finally {
+        appState.scanning = false;
+      }
+    }
+
+    // enrichFlow não é mais necessário com FlowVersionView (já tem tudo numa query)
+    async function enrichFlow(flow) {
+      return { ...flow, risk: computeFlowRisk(flow, flow) };
+    }
+
+    function computeFlowRisk(flow, version) {
+      const lastMod = new Date(flow.LastModifiedDate);
+      const monthsAgo = (Date.now() - lastMod.getTime()) / (1000 * 60 * 60 * 24 * 30);
+      const isInactive = flow.Status !== 'Active';
+      const isOld = monthsAgo > 6;
+      const noDesc = !flow.Description || flow.Description.trim() === '';
+
+      if (isInactive && isOld) return 'high';
+      if (isInactive || (isOld && noDesc)) return 'medium';
+      return 'low';
+    }
+
+    // ─── SCAN FLOW FIELDS ─────────────────────────────────────────────────────
+    document.getElementById('scanFlowFieldsBtn').addEventListener('click', async () => {
+      if (!appState.connected) { toast('Conecte-se à org primeiro.', 'error'); return; }
+      if (appState.flows.length === 0) { toast('Escaneie os flows primeiro.', 'error'); return; }
+      if (appState.scanning) return;
+
+      appState.scanning = true;
+      setOrgPillState('scanning');
+      setProgress(5);
+      const total = Math.min(appState.flows.length, 50);
+      toast(`Lendo metadados de ${total} flows…`, 'info');
+
+      const fieldMap = {};
+      let done = 0;
+
+      for (const flow of appState.flows.slice(0, 50)) {
+        try {
+          const res = await sfFetch(
+            `${appState.instanceUrl}/services/data/${appState.apiVersion}/tooling/sobjects/Flow/${flow.Id}`,
+            appState.token
+          );
+          if (res.ok) {
+            const data = await res.json();
+            const fields = extractFieldsFromMetadata(data.Metadata || {});
+            fields.forEach(f => {
+              if (!fieldMap[f]) fieldMap[f] = new Set();
+              fieldMap[f].add(flow.MasterLabel);
+            });
+          }
+        } catch {}
+        done++;
+        setProgress(Math.round((done / total) * 90) + 5);
+      }
+
+      appState.flowFields = Object.fromEntries(
+        Object.entries(fieldMap).map(([k, v]) => [k, [...v]])
+      );
+
+      setProgress(100);
+      setTimeout(() => setProgress(0), 800);
+      setOrgPillState('connected');
+      appState.scanning = false;
+      updateSummary();
+      renderFlowFields();
+      resultsSection.style.display = 'flex';
+      switchTab('flow-fields');
+      toast(`${Object.keys(appState.flowFields).length} campos encontrados nos flows.`, 'success');
+    });
+
+    function extractFieldsFromMetadata(meta) {
+      const fields = new Set();
+      const str = JSON.stringify(meta);
+
+      // Campos custom: qualquer token terminando em __c
+      (str.match(/\b\w+__c\b/g) || []).forEach(f => fields.add(f));
+
+      // Referências diretas em elementos de filter/assignment: "field":"FieldName"
+      for (const m of str.matchAll(/"field"\s*:\s*"([A-Za-z]\w*)"/g)) {
+        fields.add(m[1]);
+      }
+
+      // Merge fields do tipo {!$Record.FieldName} ou {!variable.FieldName}
+      for (const m of str.matchAll(/\{!(?:\$Record|\w+)\.([A-Za-z]\w*)\}/g)) {
+        fields.add(m[1]);
+      }
+
+      return [...fields].filter(f => f.length > 1 && !['Id', 'true', 'false', 'null'].includes(f));
+    }
+
+    // ─── RENDER FLOW FIELDS ───────────────────────────────────────────────────
+    function renderFlowFields() {
+      let entries = Object.entries(appState.flowFields);
+
+      const filter = appState.activeFilter;
+      if (filter === 'high')   entries = entries.filter(([, refs]) => refs.length >= 3);
+      else if (filter === 'medium') entries = entries.filter(([, refs]) => refs.length === 2);
+      else if (filter === 'low')    entries = entries.filter(([, refs]) => refs.length === 1);
+
+      // Custom primeiro, depois por número de flows desc
+      entries.sort((a, b) => {
+        const ac = a[0].endsWith('__c') ? 1 : 0;
+        const bc = b[0].endsWith('__c') ? 1 : 0;
+        if (bc !== ac) return bc - ac;
+        return b[1].length - a[1].length;
+      });
+
+      if (entries.length === 0) {
+        tabFlowFields.innerHTML = `<div class="empty-state">
+          <div class="icon">🔗</div>
+          <p>Nenhum campo encontrado. Clique em "Escanear campos nos flows" após escanear os flows.</p>
+        </div>`;
+        return;
+      }
+
+      tabFlowFields.innerHTML = entries.map(([fieldName, flows]) => {
+        const isCustom = fieldName.endsWith('__c');
+        let badgeCls = 'low';
+        if (flows.length >= 3) badgeCls = 'high';
+        else if (flows.length >= 2) badgeCls = 'medium';
+        const tagsHtml = flows.slice(0, 5).map(f => `<span class="field-tag">${escHtml(f)}</span>`).join('') +
+          (flows.length > 5 ? `<span class="field-tag">+${flows.length - 5} mais</span>` : '');
+        return `
+          <div class="result-card risk-low">
+            <div class="result-head">
+              <div>
+                <div class="result-title" style="font-family:'IBM Plex Mono',monospace;font-size:0.88rem">${escHtml(fieldName)}</div>
+                <div class="result-meta">${isCustom ? 'Campo customizado' : 'Campo padrão'} · referenciado em ${flows.length} flow${flows.length > 1 ? 's' : ''}</div>
+              </div>
+              <span class="badge ${badgeCls}">${flows.length} flow${flows.length > 1 ? 's' : ''}</span>
+            </div>
+            <div class="fields-list">${tagsHtml}</div>
+            <div class="result-actions">
+              <button onclick="copyToClipboard('${escHtml(fieldName)}')">📋 Copiar API Name</button>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    // ─── SCAN FIELDS ──────────────────────────────────────────────────────────
+    document.getElementById('scanFieldsBtn').addEventListener('click', async () => {
+      if (!appState.connected) { toast('Conecte-se à org primeiro.', 'error'); return; }
+      const objName = document.getElementById('objectInput').value.trim();
+      if (!objName) { toast('Informe o nome do objeto (ex: Opportunity).', 'error'); return; }
+
+      setOrgPillState('scanning');
+      setProgress(15);
+      toast(`Analisando campos de ${objName}…`, 'info');
+
+      try {
+        // 1. Describe the object to get all fields
+        const descUrl = `${appState.instanceUrl}/services/data/${appState.apiVersion}/sobjects/${objName}/describe`;
+        const descRes = await sfFetch(descUrl, appState.token);
+        if (!descRes.ok) throw new Error(`Objeto "${objName}" não encontrado na org.`);
+        const descData = await descRes.json();
+        const allFields = descData.fields.map(f => f.name);
+        setProgress(40);
+
+        // 2. Search for field references in all active Flow metadata
+        const fieldUsage = {};
+        allFields.forEach(f => { fieldUsage[f] = { inFlows: false, refs: [] }; });
+
+        if (appState.flows.length > 0) {
+          // Cross-reference: check which field names appear in flow developer names (heuristic)
+          // In a real integration, you'd parse the full Flow XML via Metadata API
+          appState.flows.forEach(flow => {
+            allFields.forEach(field => {
+              const fieldLower = field.toLowerCase();
+              const flowLabel  = (flow.MasterLabel || '').toLowerCase();
+              const flowDev    = (flow.DeveloperName || '').toLowerCase();
+              if (flowLabel.includes(fieldLower) || flowDev.includes(fieldLower)) {
+                fieldUsage[field].inFlows = true;
+                fieldUsage[field].refs.push(flow.MasterLabel);
+              }
+            });
+          });
+        }
+        setProgress(75);
+
+        // 3. Mark standard fields as always-used
+        const stdFields = ['Id','Name','CreatedDate','CreatedById','LastModifiedDate',
+          'LastModifiedById','IsDeleted','SystemModstamp','OwnerId'];
+
+        appState.fieldAnalysis = allFields.map(f => ({
+          name: f,
+          isStandard: stdFields.includes(f) || !f.endsWith('__c'),
+          usedInFlows: fieldUsage[f].inFlows,
+          flowRefs: fieldUsage[f].refs,
+          risk: stdFields.includes(f) ? 'low'
+            : !f.endsWith('__c') ? 'low'
+            : fieldUsage[f].inFlows ? 'low'
+            : 'medium',
+        }));
+
+        setProgress(100);
+        setTimeout(() => setProgress(0), 800);
+        setOrgPillState('connected');
+        updateSummary();
+        renderFields();
+        resultsSection.style.display = 'flex';
+        switchTab('fields');
+        toast(`${allFields.length} campos analisados em ${objName}.`, 'success');
+      } catch (err) {
+        setOrgPillState('error');
+        setProgress(0);
+        toast(`Erro: ${err.message}`, 'error', 7000);
+      }
+    });
+
+    // ─── AI ANALYSIS ──────────────────────────────────────────────────────────
+    document.getElementById('analyzeAllBtn').addEventListener('click', async () => {
+      if (appState.flows.length === 0 && appState.fieldAnalysis.length === 0) {
+        toast('Faça um scan de flows ou campos primeiro.', 'error'); return;
+      }
+
+      resultsSection.style.display = 'flex';
+      switchTab('ai');
+      aiStatusText.textContent = 'Analisando com Claude…';
+      aiReportContent.textContent = '';
+
+      const flowSummary = appState.flows.slice(0, 40).map(f =>
+        `- ${f.MasterLabel} (${f.ProcessType}, ${f.Status}, v${f.LatestVersion || '?'}, risco: ${f.risk}, última modificação: ${f.LastModifiedDate?.substring(0,10)})`
+      ).join('\n');
+
+      const fieldSummary = appState.fieldAnalysis.slice(0, 60)
+        .filter(f => f.name.endsWith('__c'))
+        .map(f =>
+          `- ${f.name} | usado em flows: ${f.usedInFlows ? 'SIM' : 'NÃO'} | risco: ${f.risk}`
+        ).join('\n');
+
+      const prompt = `Você é um arquiteto Salesforce sênior especialista em Flows, Apex e performance de org.
+
+Analise os metadados abaixo e retorne um relatório técnico em português com:
+
+## 1. Flows — Candidatos a Exclusão
+Liste flows que podem ser removidos e por quê.
+
+## 2. Flows — Oportunidades de Refatoração
+Identifique flows redundantes, que deveriam ser Apex, ou que têm má nomenclatura.
+
+## 3. Campos — Candidatos a Deprecação
+Liste campos custom que provavelmente não têm uso e recomendem um processo de análise.
+
+## 4. Riscos de Governor Limits
+Com base nos tipos de flow (ProcessType) e quantidade, identifique riscos.
+
+## 5. Recomendações de Arquitetura
+Dê 3 recomendações práticas e objetivas para o time.
+
+---
+FLOWS DA ORG (${appState.flows.length} total):
+${flowSummary || 'Nenhum flow escaneado.'}
+
+---
+CAMPOS CUSTOM ANALISADOS:
+${fieldSummary || 'Nenhum campo analisado.'}
+
+Seja direto, técnico e evite respostas genéricas. Foque em ações concretas.`;
+
+      try {
+        const res = await fetch('/api/ai-analysis', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `API retornou ${res.status}`);
+        }
+
+        aiStatusText.textContent = 'Gerando análise…';
+        let report = '';
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n').filter(l => l.startsWith('data: '));
+          for (const line of lines) {
+            try {
+              const json = JSON.parse(line.slice(6));
+              if (json.type === 'content_block_delta' && json.delta?.text) {
+                report += json.delta.text;
+                aiReportContent.textContent = report;
+              }
+            } catch {}
+          }
+        }
+
+        appState.aiReport = report;
+        aiStatusText.textContent = `Análise concluída • ${new Date().toLocaleTimeString('pt-BR')}`;
+        updateSummary();
+        toast('Análise com IA concluída! 🤖', 'success');
+      } catch (err) {
+        aiStatusText.textContent = 'Erro na análise.';
+        toast(`Erro na análise IA: ${err.message}`, 'error', 7000);
+        console.error(err);
+      }
+    });
+
+    // ─── RENDER FLOWS ─────────────────────────────────────────────────────────
+    function renderFlows() {
+      const filter = appState.activeFilter;
+      let items = appState.flows;
+      if (filter !== 'all') items = items.filter(f => f.risk === filter);
+
+      if (items.length === 0) {
+        tabFlows.innerHTML = `<div class="empty-state">
+          <div class="icon">🔍</div>
+          <p>Nenhum flow encontrado com esse filtro.</p>
+        </div>`;
+        return;
+      }
+
+      tabFlows.innerHTML = items.map(f => {
+        const badgeClass = f.risk === 'high' ? 'high' : f.risk === 'medium' ? 'medium' : 'low';
+        const riskLabel  = f.risk === 'high' ? 'Alto Risco' : f.risk === 'medium' ? 'Médio Risco' : 'Ok';
+        const lastMod    = f.LastModifiedDate ? f.LastModifiedDate.substring(0,10) : '—';
+        const statusColor = f.Status === 'Active' ? 'var(--success)' : 'var(--warning)';
+
+        return `
+          <div class="result-card risk-${f.risk}" data-flow-id="${f.Id}">
+            <div class="result-head">
+              <div>
+                <div class="result-title">${escHtml(f.MasterLabel)}</div>
+                <div class="result-meta">
+                  ${escHtml(f.DeveloperName)} · v${f.LatestVersion || '?'}
+                </div>
+              </div>
+              <span class="badge ${badgeClass}">${riskLabel}</span>
+            </div>
+            <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">
+              <span class="chip" style="color:${statusColor}">${f.Status}</span>
+              <span class="chip">${escHtml(f.ProcessType || '—')}</span>
+              <span style="font-size:0.78rem;color:var(--text-muted);margin-left:auto">Última mod: ${lastMod}</span>
+            </div>
+            ${f.Description ? `<p style="font-size:0.8rem;color:var(--text-muted);line-height:1.5">${escHtml(f.Description.substring(0,120))}${f.Description.length > 120 ? '…' : ''}</p>` : ''}
+            <div class="ai-block" id="aiBlock-${f.Id}">
+              <div class="ai-label">🤖 Análise Claude</div>
+              <div id="aiText-${f.Id}"></div>
+            </div>
+            <div class="result-actions">
+              <button onclick="analyzeFlow('${f.Id}','${escAttr(f.MasterLabel)}','${f.Status}','${f.ProcessType}','${lastMod}')">🤖 Analisar com IA</button>
+              <button onclick="openInOrg('${f.Id}')">↗️ Abrir na org</button>
+              ${f.risk === 'high' ? `<button style="color:var(--danger)" onclick="markForReview('${f.Id}')">⚠️ Marcar revisão</button>` : ''}
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    // ─── RENDER FIELDS ────────────────────────────────────────────────────────
+    function renderFields() {
+      const filter = appState.activeFilter;
+      let items = appState.fieldAnalysis.filter(f => f.name.endsWith('__c'));
+      if (filter === 'high') items = items.filter(f => !f.usedInFlows && f.risk !== 'low');
+      else if (filter === 'medium') items = items.filter(f => f.risk === 'medium');
+      else if (filter === 'low') items = items.filter(f => f.risk === 'low');
+
+      if (items.length === 0) {
+        tabFields.innerHTML = `<div class="empty-state">
+          <div class="icon">🏷️</div>
+          <p>Nenhum campo encontrado. Escaneie um objeto primeiro.</p>
+        </div>`;
+        return;
+      }
+
+      tabFields.innerHTML = items.map(f => {
+        const used = f.usedInFlows;
+        const risk = used ? 'low' : 'medium';
+        const badgeCls = used ? 'low' : 'medium';
+        const badgeLbl = used ? 'Em uso' : 'Sem referência';
+
+        return `
+          <div class="result-card risk-${risk}">
+            <div class="result-head">
+              <div>
+                <div class="result-title" style="font-family:'IBM Plex Mono',monospace;font-size:0.88rem">${escHtml(f.name)}</div>
+                <div class="result-meta">Campo customizado</div>
+              </div>
+              <span class="badge ${badgeCls}">${badgeLbl}</span>
+            </div>
+            ${used ? `<div class="fields-list">${f.flowRefs.slice(0,3).map(r => `<span class="field-tag">${escHtml(r)}</span>`).join('')}${f.flowRefs.length > 3 ? `<span class="field-tag">+${f.flowRefs.length - 3}</span>` : ''}</div>` : ''}
+            ${!used ? `<p style="font-size:0.8rem;color:var(--text-muted)">Nenhuma referência encontrada em flows escaneados. Verifique também Layouts, Reports e Apex antes de remover.</p>` : ''}
+            <div class="result-actions">
+              <button onclick="copyToClipboard('${f.name}')">📋 Copiar API Name</button>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    // ─── INDIVIDUAL FLOW AI ANALYSIS ─────────────────────────────────────────
+    async function analyzeFlow(id, label, status, processType, lastMod) {
+      const block   = document.getElementById(`aiBlock-${id}`);
+      const textEl  = document.getElementById(`aiText-${id}`);
+      if (!block || !textEl) return;
+
+      block.classList.add('visible');
+      textEl.innerHTML = '<span class="ai-typing"></span>';
+
+      const prompt = `Você é um arquiteto Salesforce sênior.
+      
+Analise este Flow e dê uma recomendação OBJETIVA em até 4 linhas:
+
+Nome: ${label}
+Tipo: ${processType}
+Status: ${status}  
+Última modificação: ${lastMod}
+
+Responda com:
+1. O que provavelmente faz esse flow
+2. Se deve ser mantido, refatorado ou removido
+3. Próximo passo prático`;
+
+      try {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 1000,
+            stream: true,
+            messages: [{ role: 'user', content: prompt }],
+          }),
+        });
+
+        let text = '';
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        textEl.innerHTML = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n').filter(l => l.startsWith('data: '));
+          for (const line of lines) {
+            try {
+              const json = JSON.parse(line.slice(6));
+              if (json.type === 'content_block_delta' && json.delta?.text) {
+                text += json.delta.text;
+                textEl.textContent = text;
+              }
+            } catch {}
+          }
+        }
+      } catch (err) {
+        textEl.textContent = 'em desenvolvimento ';
+      }
+    }
+
+    // ─── HELPERS ──────────────────────────────────────────────────────────────
+    function openInOrg(flowId) {
+      if (!appState.instanceUrl) return;
+      window.open(`${appState.instanceUrl}/builder_platform_interaction/flowBuilder.app?flowId=${flowId}`, '_blank');
+    }
+
+    function markForReview(id) {
+      const card = document.querySelector(`[data-flow-id="${id}"]`);
+      if (card) {
+        card.style.outline = '2px solid var(--danger)';
+        card.style.outlineOffset = '2px';
+      }
+      toast('Flow marcado para revisão.', 'info');
+    }
+
+    function copyToClipboard(text) {
+      navigator.clipboard.writeText(text).then(() => toast(`Copiado: ${text}`, 'success'));
+    }
+
+    function escHtml(str) {
+      return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    function escAttr(str) {
+      return String(str || '').replace(/'/g,"\\'");
+    }
+
+    function updateSummary() {
+      document.getElementById('statFlows').textContent  = appState.flows.length;
+      const ffCount = Object.keys(appState.flowFields).length;
+      document.getElementById('statFields').textContent = ffCount || appState.fieldAnalysis.length;
+      document.getElementById('statIssues').textContent =
+        appState.flows.filter(f => f.risk === 'medium' || f.risk === 'high').length;
+      document.getElementById('statDelete').textContent =
+        appState.flows.filter(f => f.risk === 'high').length;
+    }
+
+    // ─── TABS ────────────────────────────────────────────────────────────────
+    function switchTab(tab) {
+      appState.activeTab = tab;
+      tabFlows.style.display      = tab === 'flows'       ? 'grid'  : 'none';
+      tabFields.style.display     = tab === 'fields'      ? 'grid'  : 'none';
+      tabFlowFields.style.display = tab === 'flow-fields' ? 'grid'  : 'none';
+      tabAi.style.display         = tab === 'ai'          ? 'block' : 'none';
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tab);
+      });
+    }
+
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    });
+
+    // ─── FILTERS ──────────────────────────────────────────────────────────────
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        appState.activeFilter = btn.dataset.filter;
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        if (appState.activeTab === 'flows')       renderFlows();
+        if (appState.activeTab === 'fields')      renderFields();
+        if (appState.activeTab === 'flow-fields') renderFlowFields();
+      });
+    });
+    </script>
+  </body>
+</html>

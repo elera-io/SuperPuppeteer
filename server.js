@@ -2,8 +2,6 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
-const { execFile } = require('child_process');
-const { promisify } = require('util');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer');
 
@@ -11,21 +9,114 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ─── PROXY SALESFORCE (evita CORS no browser) ───────────────────────────────
+app.post('/api/sf-proxy', async (req, res) => {
+  const { url, token, method = 'GET', body: reqBody } = req.body || {};
+
+  if (!url || !token) {
+    return res.status(400).json({ error: 'url e token são obrigatórios.' });
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    return res.status(400).json({ error: 'URL inválida.' });
+  }
+
+  if (!parsedUrl.hostname.endsWith('.salesforce.com') && !parsedUrl.hostname.endsWith('.force.com')) {
+    return res.status(403).json({ error: 'Domínio não permitido. Apenas salesforce.com.' });
+  }
+
+  try {
+    const fetchOptions = {
+      method,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    };
+    if (reqBody && method !== 'GET') {
+      fetchOptions.body = typeof reqBody === 'string' ? reqBody : JSON.stringify(reqBody);
+    }
+
+    const sfRes = await fetch(url, fetchOptions);
+    const text  = await sfRes.text();
+
+    if (!sfRes.ok) {
+      console.error(`[sf-proxy] SF API ${sfRes.status} para ${url}`);
+      console.error('[sf-proxy] Resposta:', text.substring(0, 500));
+    }
+
+    let data;
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+    return res.status(sfRes.status).json(data);
+  } catch (err) {
+    console.error('[sf-proxy] Erro de rede:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── PROXY ANTHROPIC AI (evita CORS e protege a API key) ─────────────────────
+app.post('/api/ai-analysis', async (req, res) => {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: 'ANTHROPIC_API_KEY não configurada no servidor.' });
+  }
+
+  const { prompt } = req.body || {};
+  if (!prompt) return res.status(400).json({ error: 'prompt é obrigatório.' });
+
+  try {
+    const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6-20251101',
+        max_tokens: 1000,
+        stream: true,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+
+    if (!anthropicRes.ok) {
+      const errText = await anthropicRes.text();
+      return res.status(anthropicRes.status).send(errText);
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const reader = anthropicRes.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(decoder.decode(value, { stream: true }));
+    }
+    res.end();
+  } catch (err) {
+    console.error('[ai-analysis] Erro:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else res.end();
+  }
+});
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
-const execFileAsync = promisify(execFile);
 
 const PROFILE_DIR = path.join(__dirname, '.user-data', 'chrome-profile');
 const DATA_DIR = path.join(__dirname, '.data');
 const SCENARIOS_FILE = path.join(DATA_DIR, 'scenarios.json');
 const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings');
-const RECORDINGS_INDEX_FILE = path.join(DATA_DIR, 'recordings-index.json');
-const SALESFORCE_TARGET_ORG = process.env.SALESFORCE_TARGET_ORG || 'Elera';
-const SALESFORCE_ACCEPTANCE_OBJECT = 'agf__ADM_Acceptance_Criterion__c';
-const SALESFORCE_ACCEPTANCE_FIELDS =
-  'Id, Name, agf__Status__c, agf__Description__c, agf__Work__r.Project__r.Name, agf__Work__r.Name';
-const SALESFORCE_ID_PATTERN = /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/;
-const SALESFORCE_ACCEPTANCE_STATUS_VALUES = new Set(['Passed', 'Failed']);
+const ORG_DIR = path.join(DATA_DIR, 'orgs');
+const RUN_HISTORY_FILE = path.join(DATA_DIR, 'run-history.json');
 const SESSION_FILES = [
   path.join(PROFILE_DIR, 'Default', 'Current Session'),
   path.join(PROFILE_DIR, 'Default', 'Current Tabs'),
@@ -40,6 +131,7 @@ const state = {
   lastRecording: null,
   replayLog: [],
   savedScenarios: [],
+  runHistory: [],
   queue: [],
   queueRunning: false,
   queuePaused: false,
@@ -67,220 +159,56 @@ const asBoolean = (value) => {
   }
   return false;
 };
-const normalizeOptionalString = (value) => {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed || null;
-};
-const normalizeOptionalText = (value) => {
-  if (typeof value !== 'string') return null;
-  const normalized = value.replace(/\r\n/g, '\n');
-  return normalized.length ? normalized : null;
-};
-const normalizeAcceptanceStatus = (value) => {
-  if (typeof value !== 'string') return null;
-  const normalized = value.trim().toLowerCase();
-  if (normalized === 'passed') return 'Passed';
-  if (normalized === 'failed') return 'Failed';
-  return null;
-};
-const extractScenarioTestCase = (item) => {
-  const id = normalizeOptionalString(
-    item?.testCase?.id || item?.testCase?.Id || item?.testCaseId
-  );
-  if (!id) return null;
-  return {
-    id,
-    name: normalizeOptionalString(item?.testCase?.name || item?.testCase?.Name || item?.testCaseName),
-    projectName: normalizeOptionalString(
-      item?.testCase?.projectName || item?.testCase?.project || item?.testCaseProjectName
-    ),
-    workName: normalizeOptionalString(
-      item?.testCase?.workName || item?.testCase?.work || item?.testCaseWorkName
-    ),
-    status: normalizeAcceptanceStatus(
-      item?.testCase?.status ||
-        item?.testCase?.Status ||
-        item?.testCase?.agf__Status__c ||
-        item?.testCaseStatus
-    ),
-    description: normalizeOptionalText(
-      item?.testCase?.description ||
-        item?.testCase?.Description ||
-        item?.testCase?.agf__Description__c ||
-        item?.testCaseDescription
-    ),
-  };
-};
-const buildAcceptanceCriterionQuery = (testCaseId) =>
-  `SELECT ${SALESFORCE_ACCEPTANCE_FIELDS} FROM ${SALESFORCE_ACCEPTANCE_OBJECT} WHERE Id = '${testCaseId}'`;
-const fetchTestCaseFromSalesforce = async (testCaseId) => {
-  if (!SALESFORCE_ID_PATTERN.test(testCaseId)) {
-    const error = new Error('ID do caso de teste inválido. Use um ID Salesforce com 15 ou 18 caracteres.');
-    error.statusCode = 400;
-    throw error;
-  }
-
-  const query = buildAcceptanceCriterionQuery(testCaseId);
+const loadRunHistory = () => {
   try {
-    const { stdout } = await execFileAsync(
-      'sf',
-      ['data', 'query', '--query', query, '--target-org', SALESFORCE_TARGET_ORG, '--json'],
-      { maxBuffer: 1024 * 1024 }
-    );
-    const payload = JSON.parse(stdout || '{}');
-    const records = Array.isArray(payload?.result?.records) ? payload.result.records : [];
-    const record = records[0];
-    if (!record) {
-      const error = new Error(
-        `Caso de teste ${testCaseId} não encontrado no org ${SALESFORCE_TARGET_ORG}.`
-      );
-      error.statusCode = 404;
-      throw error;
-    }
-
-    return {
-      id: normalizeOptionalString(record.Id) || testCaseId,
-      name: normalizeOptionalString(record.Name),
-      projectName: normalizeOptionalString(record.agf__Work__r?.Project__r?.Name),
-      workName: normalizeOptionalString(record.agf__Work__r?.Name),
-      status: normalizeAcceptanceStatus(record.agf__Status__c),
-      description: normalizeOptionalText(record.agf__Description__c),
-    };
-  } catch (error) {
-    if (error.statusCode) throw error;
-    const stderr = normalizeOptionalString(error.stderr);
-    const stdout = normalizeOptionalString(error.stdout);
-    const detail = stderr || stdout || normalizeOptionalString(error.message) || 'Erro desconhecido.';
-    const wrappedError = new Error(
-      `Falha ao consultar o Salesforce para o caso ${testCaseId}: ${detail}`
-    );
-    wrappedError.statusCode = error.code === 'ENOENT' ? 500 : 502;
-    throw wrappedError;
+    if (!fs.existsSync(RUN_HISTORY_FILE)) return;
+    const parsed = JSON.parse(fs.readFileSync(RUN_HISTORY_FILE, 'utf8'));
+    if (Array.isArray(parsed)) state.runHistory = parsed.slice(-100);
+  } catch {
+    // ignore
   }
 };
-const getSalesforceConnection = async () => {
+const saveRunHistory = () => {
+  ensureDataDir();
+  fs.writeFileSync(RUN_HISTORY_FILE, JSON.stringify(state.runHistory.slice(-100), null, 2));
+};
+const addRunHistory = (entry) => {
+  state.runHistory.push(entry);
+  if (state.runHistory.length > 100) state.runHistory.splice(0, state.runHistory.length - 100);
+  saveRunHistory();
+};
+
+const GENERIC_SUBDOMAINS = new Set([
+  'app', 'www', 'staging', 'api', 'dev', 'uat', 'qa', 'test',
+  'sandbox', 'prod', 'production', 'portal', 'admin', 'login', 'auth',
+]);
+const orgToSlug = (org) => {
+  if (!org) return 'geral';
+  return String(org)
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\.[a-z]{2,}$/i, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'geral';
+};
+const orgFromUrl = (url) => {
   try {
-    const { stdout } = await execFileAsync(
-      'sf',
-      ['org', 'display', '--target-org', SALESFORCE_TARGET_ORG, '--verbose', '--json'],
-      { maxBuffer: 1024 * 1024 }
-    );
-    const payload = JSON.parse(stdout || '{}');
-    const result = payload?.result || {};
-    const accessToken = normalizeOptionalString(result.accessToken);
-    const instanceUrl = normalizeOptionalString(result.instanceUrl);
-    const apiVersion = normalizeOptionalString(result.apiVersion) || '60.0';
-    if (!accessToken || !instanceUrl) {
-      const error = new Error('Não foi possível obter a sessão ativa do Salesforce.');
-      error.statusCode = 502;
-      throw error;
+    const { hostname } = new URL(url);
+    if (!hostname || hostname === 'localhost') return 'geral';
+    const parts = hostname.split('.');
+    if (parts.length <= 2) return orgToSlug(parts[0]);
+    if (!GENERIC_SUBDOMAINS.has(parts[0])) return orgToSlug(parts[0]);
+    const secondLast = parts[parts.length - 2];
+    if (secondLast.length <= 3 && parts.length >= 4) {
+      return orgToSlug(parts[parts.length - 3]);
     }
-    return {
-      accessToken,
-      instanceUrl: instanceUrl.replace(/\/+$/, ''),
-      apiVersion,
-    };
-  } catch (error) {
-    if (error.statusCode) throw error;
-    const detail = normalizeOptionalString(error.stderr) || normalizeOptionalString(error.message) || 'Erro desconhecido.';
-    const wrappedError = new Error(
-      `Falha ao obter a sessão Salesforce (${SALESFORCE_TARGET_ORG}): ${detail}`
-    );
-    wrappedError.statusCode = error.code === 'ENOENT' ? 500 : 502;
-    throw wrappedError;
+    return orgToSlug(parts[parts.length - 2]);
+  } catch {
+    return 'geral';
   }
-};
-const patchAcceptanceCriterionFields = async (testCaseId, values, label) => {
-  if (!SALESFORCE_ID_PATTERN.test(testCaseId)) {
-    const error = new Error('ID do caso de teste inválido. Use um ID Salesforce com 15 ou 18 caracteres.');
-    error.statusCode = 400;
-    throw error;
-  }
-
-  const { accessToken, instanceUrl, apiVersion } = await getSalesforceConnection();
-  const endpoint = `${instanceUrl}/services/data/v${apiVersion}/sobjects/${encodeURIComponent(
-    SALESFORCE_ACCEPTANCE_OBJECT
-  )}/${encodeURIComponent(testCaseId)}`;
-
-  try {
-    const response = await fetch(endpoint, {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(values),
-    });
-
-    if (response.ok) return;
-
-    const payload = await response.json().catch(() => null);
-    let detail = null;
-    if (Array.isArray(payload)) {
-      detail = payload
-        .map((item) => normalizeOptionalString(item?.message))
-        .filter(Boolean)
-        .join(' | ');
-    } else if (payload && typeof payload === 'object') {
-      detail = normalizeOptionalString(payload.message) || normalizeOptionalString(payload.error);
-    }
-
-    const error = new Error(
-      `Falha ao atualizar ${label} no Salesforce para o caso ${testCaseId}: ${
-        detail || `HTTP ${response.status}`
-      }`
-    );
-    error.statusCode = response.status >= 500 ? 502 : response.status;
-    throw error;
-  } catch (error) {
-    if (error.statusCode) throw error;
-    const detail = normalizeOptionalString(error.message) || 'Erro desconhecido.';
-    const wrappedError = new Error(
-      `Falha ao atualizar ${label} no Salesforce para o caso ${testCaseId}: ${detail}`
-    );
-    wrappedError.statusCode = 502;
-    throw wrappedError;
-  }
-};
-const updateAcceptanceCriterionDescription = async (testCaseId, description) => {
-  const nextDescription = typeof description === 'string' ? description.replace(/\r\n/g, '\n') : '';
-  await patchAcceptanceCriterionFields(
-    testCaseId,
-    { agf__Description__c: nextDescription },
-    'a descrição'
-  );
-  return normalizeOptionalText(nextDescription);
-};
-const updateAcceptanceCriterionStatus = async (testCaseId, status) => {
-  const normalizedStatus = normalizeAcceptanceStatus(status);
-  if (!normalizedStatus || !SALESFORCE_ACCEPTANCE_STATUS_VALUES.has(normalizedStatus)) {
-    const error = new Error('Status inválido. Use Passed ou Failed.');
-    error.statusCode = 400;
-    throw error;
-  }
-  await patchAcceptanceCriterionFields(
-    testCaseId,
-    { agf__Status__c: normalizedStatus },
-    'o status'
-  );
-  return normalizedStatus;
-};
-const syncTestCaseDescription = (testCaseId, description) => {
-  const normalizedDescription = normalizeOptionalText(description);
-  state.savedScenarios.forEach((scenario) => {
-    if (!scenario?.testCase || scenario.testCase.id !== testCaseId) return;
-    scenario.testCase.description = normalizedDescription;
-  });
-  return normalizedDescription;
-};
-const syncTestCaseStatus = (testCaseId, status) => {
-  const normalizedStatus = normalizeAcceptanceStatus(status);
-  state.savedScenarios.forEach((scenario) => {
-    if (!scenario?.testCase || scenario.testCase.id !== testCaseId) return;
-    scenario.testCase.status = normalizedStatus;
-  });
-  return normalizedStatus;
 };
 
 const loadScenarios = () => {
@@ -298,11 +226,15 @@ const loadScenarios = () => {
       .map((item, index) => ({
         id: item.id || generateId('scn'),
         name: item.name || `Cenário ${index + 1}`,
+        org: item.org || null,
+        description: item.description || '',
+        tags: Array.isArray(item.tags) ? item.tags.filter((t) => typeof t === 'string') : [],
+        taskUrl: item.taskUrl || null,
+        lastRun: item.lastRun || null,
         createdAt: item.createdAt || nowIso(),
         events: item.events || [],
         duration: item.duration || 0,
         startUrl: item.startUrl || null,
-        testCase: extractScenarioTestCase(item),
       }));
     if (Array.isArray(queueList)) {
       state.queue = queueList
@@ -334,146 +266,42 @@ const saveScenarios = () => {
       2
     )
   );
-};
 
-const normalizeRecordingsIndexEntry = (entry) => {
-  if (!entry || typeof entry !== 'object') return null;
-  const name = normalizeOptionalString(entry.name);
-  if (!name) return null;
-  const source = normalizeOptionalString(entry.source) || 'single';
-  const scenarioId = normalizeOptionalString(entry.scenarioId);
-  const scenarioName = normalizeOptionalString(entry.scenarioName);
-  const recordingId = normalizeOptionalString(entry.recordingId);
-  const savedAt = normalizeOptionalString(entry.savedAt) || nowIso();
-  const startUrl = normalizeOptionalString(entry.startUrl);
-  const queueIndexRaw = Number(entry.queueIndex);
-  const queueIndex =
-    Number.isInteger(queueIndexRaw) && queueIndexRaw >= 0 ? queueIndexRaw : null;
-  return {
-    name,
-    source,
-    scenarioId,
-    scenarioName,
-    recordingId,
-    savedAt,
-    startUrl,
-    queueIndex,
-  };
-};
-const loadRecordingsIndex = () => {
-  try {
-    if (!fs.existsSync(RECORDINGS_INDEX_FILE)) return [];
-    const raw = fs.readFileSync(RECORDINGS_INDEX_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    const list = Array.isArray(parsed) ? parsed : parsed?.recordings;
-    if (!Array.isArray(list)) return [];
-    return list.map((entry) => normalizeRecordingsIndexEntry(entry)).filter(Boolean);
-  } catch (error) {
-    return [];
+  const byOrg = {};
+  for (const scenario of state.savedScenarios) {
+    const slug = orgToSlug(scenario.org);
+    if (!byOrg[slug]) byOrg[slug] = [];
+    byOrg[slug].push(scenario);
   }
-};
-const saveRecordingsIndex = (entries) => {
-  ensureDataDir();
-  fs.writeFileSync(
-    RECORDINGS_INDEX_FILE,
-    JSON.stringify(
-      {
-        recordings: Array.isArray(entries) ? entries : [],
-      },
-      null,
-      2
-    )
-  );
-};
-const removeRecordingIndexEntry = (name) => {
-  const targetName = normalizeOptionalString(name);
-  if (!targetName) return;
-  const entries = loadRecordingsIndex();
-  const nextEntries = entries.filter((entry) => entry.name !== targetName);
-  if (nextEntries.length !== entries.length) {
-    saveRecordingsIndex(nextEntries);
-  }
-};
-const registerRecordingExecution = (filePath, recording, options = {}) => {
-  const fileName = normalizeOptionalString(path.basename(String(filePath || '')));
-  if (!fileName) return null;
-
-  const entry = normalizeRecordingsIndexEntry({
-    name: fileName,
-    source: normalizeOptionalString(options.source) || 'single',
-    scenarioId: normalizeOptionalString(options.scenarioId),
-    scenarioName: normalizeOptionalString(
-      options.scenarioName || recording?.name || findScenario(options.scenarioId || '')?.name
-    ),
-    recordingId: normalizeOptionalString(recording?.id),
-    savedAt: nowIso(),
-    startUrl: normalizeOptionalString(options.overrideUrl || recording?.startUrl),
-    queueIndex:
-      Number.isInteger(options.queueIndex) && options.queueIndex >= 0 ? options.queueIndex : null,
-  });
-  if (!entry) return null;
-
-  try {
-    const entries = loadRecordingsIndex().filter((item) => item.name !== entry.name);
-    entries.push(entry);
-    entries.sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime());
-    saveRecordingsIndex(entries);
-    return entry;
-  } catch (error) {
-    return null;
+  for (const [slug, scenarios] of Object.entries(byOrg)) {
+    const orgDir = path.join(ORG_DIR, slug);
+    fs.mkdirSync(orgDir, { recursive: true });
+    fs.writeFileSync(path.join(orgDir, 'scenarios.json'), JSON.stringify({ org: slug, scenarios }, null, 2));
   }
 };
 
-const listRecordings = (options = {}) => {
+const listRecordings = () => {
   ensureRecordingsDir();
-  const filterScenarioId = normalizeOptionalString(options.scenarioId);
-  const indexEntries = loadRecordingsIndex();
-  const indexByName = new Map(indexEntries.map((entry) => [entry.name, entry]));
   const files = fs.readdirSync(RECORDINGS_DIR, { withFileTypes: true });
-  const existingNames = new Set();
-  const recordings = files
+  return files
     .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.webm'))
     .map((entry) => {
       const filePath = path.join(RECORDINGS_DIR, entry.name);
-      existingNames.add(entry.name);
       let stats = null;
       try {
         stats = fs.statSync(filePath);
       } catch (error) {
         return null;
       }
-      const indexEntry = indexByName.get(entry.name);
-      const scenario = indexEntry?.scenarioId ? findScenario(indexEntry.scenarioId) : null;
-      const scenarioName = scenario?.name || indexEntry?.scenarioName || null;
       return {
         name: entry.name,
         size: stats.size,
         createdAt: stats.birthtime ? stats.birthtime.toISOString() : nowIso(),
         updatedAt: stats.mtime ? stats.mtime.toISOString() : nowIso(),
-        savedAt: indexEntry?.savedAt || (stats.mtime ? stats.mtime.toISOString() : nowIso()),
-        source: indexEntry?.source || 'single',
-        scenarioId: indexEntry?.scenarioId || null,
-        scenarioName,
-        queueIndex:
-          Number.isInteger(indexEntry?.queueIndex) && indexEntry.queueIndex >= 0
-            ? indexEntry.queueIndex
-            : null,
       };
     })
     .filter(Boolean)
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-
-  const hasStaleEntries = indexEntries.some((entry) => !existingNames.has(entry.name));
-  if (hasStaleEntries) {
-    const nextEntries = indexEntries.filter((entry) => existingNames.has(entry.name));
-    saveRecordingsIndex(nextEntries);
-  }
-
-  if (filterScenarioId) {
-    return recordings.filter((recording) => recording.scenarioId === filterScenarioId);
-  }
-
-  return recordings;
 };
 
 const findScenario = (id) => state.savedScenarios.find((scenario) => scenario.id === id);
@@ -481,19 +309,15 @@ const findScenario = (id) => state.savedScenarios.find((scenario) => scenario.id
 const scenarioSummary = (scenario) => ({
   id: scenario.id,
   name: scenario.name,
+  org: scenario.org || null,
+  description: scenario.description || '',
+  tags: scenario.tags || [],
+  taskUrl: scenario.taskUrl || null,
+  lastRun: scenario.lastRun || null,
   createdAt: scenario.createdAt,
   duration: scenario.duration,
   eventCount: scenario.events.length,
-  testCase: scenario.testCase
-    ? {
-        id: scenario.testCase.id,
-        name: scenario.testCase.name || null,
-        projectName: scenario.testCase.projectName || null,
-        workName: scenario.testCase.workName || null,
-        status: scenario.testCase.status || null,
-        description: scenario.testCase.description || null,
-      }
-    : null,
+  startUrl: scenario.startUrl || null,
 });
 
 const cloneEvent = (event) => ({
@@ -1259,6 +1083,7 @@ const waitForInteractionDelay = async (targetMs, options = {}, meta = {}) => {
 };
 
 loadScenarios();
+loadRunHistory();
 
 const serializeState = () => ({
   status: state.status,
@@ -1271,6 +1096,7 @@ const serializeState = () => ({
         createdAt: state.lastRecording.createdAt,
         duration: state.lastRecording.duration,
         eventCount: state.lastRecording.events.length,
+        startUrl: state.lastRecording.startUrl || null,
       }
     : null,
   savedScenarios: state.savedScenarios.map((scenario) => scenarioSummary(scenario)),
@@ -1287,6 +1113,7 @@ const serializeState = () => ({
     cursor: state.queueCursor,
   },
   replayLog: state.replayLog.slice(-200),
+  runHistory: state.runHistory.slice(-50),
   extendScenario: state.extendScenarioId
     ? (() => {
         const scenario = findScenario(state.extendScenarioId);
@@ -2071,7 +1898,7 @@ const replayRecording = async (recording, options = {}) => {
     .slice()
     .sort((a, b) => (typeof a.t === 'number' ? a.t : 0) - (typeof b.t === 'number' ? b.t : 0));
   const source = options.source || 'single';
-  const scenarioId = normalizeOptionalString(options.scenarioId);
+  const scenarioId = String(options.scenarioId || '').trim() || null;
   const recordingName =
     String(options.scenarioName || recording.name || '').trim() || null;
   const playbackStart = monotonicNow();
@@ -2220,18 +2047,12 @@ const replayRecording = async (recording, options = {}) => {
     if (screenRecorder) {
       try {
         await screenRecorder.stop();
-        const execution = registerRecordingExecution(replayVideoPath, recording, {
-          ...options,
-          source,
-          scenarioId,
-          scenarioName: recordingName,
-        });
         pushReplayLog({
           type: 'video',
           stage: 'saved',
           source,
           scenarioId,
-          fileName: execution?.name || null,
+          fileName: replayVideoPath ? path.basename(replayVideoPath) : null,
           filePath: replayVideoPath,
         });
       } catch (error) {
@@ -2461,19 +2282,22 @@ app.post('/api/replay/last', async (req, res) => {
 
 app.post('/api/scenarios/save', async (req, res) => {
   const name = String(req.body?.name || '').trim();
-  const testCaseId = String(req.body?.testCaseId || '').trim();
   if (!state.lastRecording) return res.status(404).json({ error: 'Nenhuma gravação finalizada.' });
 
   try {
-    const testCase = testCaseId ? await fetchTestCaseFromSalesforce(testCaseId) : null;
+    const org = String(req.body?.org || '').trim() || orgFromUrl(state.lastRecording?.startUrl) || null;
     const scenario = {
       id: generateId('scn'),
-      name: name || testCase?.name || `Cenário ${state.savedScenarios.length + 1}`,
+      name: name || `Cenário ${state.savedScenarios.length + 1}`,
+      org: org || null,
+      description: String(req.body?.description || '').trim() || '',
+      tags: Array.isArray(req.body?.tags) ? req.body.tags.filter((t) => typeof t === 'string') : [],
+      taskUrl: String(req.body?.taskUrl || '').trim() || null,
+      lastRun: null,
       createdAt: nowIso(),
       events: [...state.lastRecording.events],
       duration: state.lastRecording.duration,
       startUrl: state.lastRecording.startUrl,
-      testCase,
     };
     state.savedScenarios.push(scenario);
     saveScenarios();
@@ -2488,20 +2312,6 @@ app.get('/api/scenarios/:id', async (req, res) => {
   const scenario = state.savedScenarios.find((item) => item.id === req.params.id);
   if (!scenario) return res.status(404).json({ error: 'Cenário não encontrado.' });
   return res.json(scenario);
-});
-
-app.get('/api/scenarios/:id/recordings', async (req, res) => {
-  const scenario = state.savedScenarios.find((item) => item.id === req.params.id);
-  if (!scenario) return res.status(404).json({ error: 'Cenário não encontrado.' });
-  try {
-    const recordings = listRecordings({ scenarioId: scenario.id });
-    return res.json({
-      scenario: scenarioSummary(scenario),
-      recordings,
-    });
-  } catch (error) {
-    return res.status(500).json({ error: 'Falha ao listar execuções do cenário.' });
-  }
 });
 
 app.post('/api/scenarios/:id/inputs', async (req, res) => {
@@ -2527,68 +2337,6 @@ app.post('/api/scenarios/:id/inputs', async (req, res) => {
   saveScenarios();
   broadcastState();
   return res.json({ ok: true });
-});
-
-app.post('/api/scenarios/:id/test-case/description', async (req, res) => {
-  const scenario = state.savedScenarios.find((item) => item.id === req.params.id);
-  if (!scenario) return res.status(404).json({ error: 'Cenário não encontrado.' });
-  const testCaseId = normalizeOptionalString(scenario?.testCase?.id);
-  if (!testCaseId) {
-    return res.status(400).json({ error: 'Este cenário não possui caso de teste Salesforce vinculado.' });
-  }
-
-  if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'description')) {
-    return res.status(400).json({ error: 'Informe o campo "description".' });
-  }
-
-  const description = typeof req.body?.description === 'string' ? req.body.description : '';
-
-  try {
-    const normalizedDescription = await updateAcceptanceCriterionDescription(testCaseId, description);
-    syncTestCaseDescription(testCaseId, normalizedDescription);
-    saveScenarios();
-    broadcastState();
-    return res.json({
-      ok: true,
-      testCase: {
-        ...(scenario.testCase || { id: testCaseId }),
-        description: normalizedDescription,
-      },
-    });
-  } catch (error) {
-    return res.status(Number(error.statusCode) || 500).json({ error: error.message });
-  }
-});
-
-app.post('/api/scenarios/:id/test-case/status', async (req, res) => {
-  const scenario = state.savedScenarios.find((item) => item.id === req.params.id);
-  if (!scenario) return res.status(404).json({ error: 'Cenário não encontrado.' });
-  const testCaseId = normalizeOptionalString(scenario?.testCase?.id);
-  if (!testCaseId) {
-    return res.status(400).json({ error: 'Este cenário não possui caso de teste Salesforce vinculado.' });
-  }
-
-  if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'status')) {
-    return res.status(400).json({ error: 'Informe o campo "status".' });
-  }
-
-  const status = typeof req.body?.status === 'string' ? req.body.status : '';
-
-  try {
-    const normalizedStatus = await updateAcceptanceCriterionStatus(testCaseId, status);
-    syncTestCaseStatus(testCaseId, normalizedStatus);
-    saveScenarios();
-    broadcastState();
-    return res.json({
-      ok: true,
-      testCase: {
-        ...(scenario.testCase || { id: testCaseId }),
-        status: normalizedStatus,
-      },
-    });
-  } catch (error) {
-    return res.status(Number(error.statusCode) || 500).json({ error: error.message });
-  }
 });
 
 app.post('/api/scenarios/:id/move', async (req, res) => {
@@ -2644,11 +2392,15 @@ app.post('/api/scenarios/:id/duplicate', async (req, res) => {
   const copy = {
     id: generateId('scn'),
     name: `${scenario.name} (cópia)`,
+    org: scenario.org || null,
+    description: scenario.description || '',
+    tags: [...(scenario.tags || [])],
+    taskUrl: scenario.taskUrl || null,
+    lastRun: null,
     createdAt: nowIso(),
     events: cloneEvents(scenario.events),
     duration: scenario.duration,
     startUrl: scenario.startUrl,
-    testCase: scenario.testCase ? { ...scenario.testCase } : null,
   };
   state.savedScenarios.push(copy);
   saveScenarios();
@@ -2718,7 +2470,11 @@ app.post('/api/scenarios/import', async (req, res) => {
       events: item.events || [],
       duration: item.duration || 0,
       startUrl: item.startUrl || null,
-      testCase: extractScenarioTestCase(item),
+      org: item.org || null,
+      description: item.description || '',
+      tags: Array.isArray(item.tags) ? item.tags.filter((t) => typeof t === 'string') : [],
+      taskUrl: item.taskUrl || null,
+      lastRun: null,
     }));
   state.queue = [];
   state.queueCursor = 0;
@@ -2907,7 +2663,6 @@ app.delete('/api/recordings/:name', async (req, res) => {
       return res.status(404).json({ error: 'Captura não encontrada.' });
     }
     fs.rmSync(filePath, { force: true });
-    removeRecordingIndexEntry(safeName);
     return res.json({ ok: true });
   } catch (error) {
     return res.status(500).json({ error: 'Falha ao remover captura.' });
