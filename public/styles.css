@@ -734,6 +734,10 @@ textarea {
   box-shadow: var(--shadow-card);
 }
 
+.modal-card-compact {
+  width: min(760px, 92vw);
+}
+
 .modal-header {
   display: flex;
   justify-content: space-between;
@@ -765,6 +769,11 @@ textarea {
   font-size: 0.79rem;
 }
 
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.79rem;
+}
+
 .description-status {
   min-height: 18px;
 }
@@ -780,6 +789,18 @@ textarea {
 .modal-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+.modal-actions-spread {
+  justify-content: space-between;
+}
+
+.failed-work-summary {
+  gap: 5px;
+}
+
+.failed-work-summary .meta {
+  font-size: 0.8rem;
 }
 
 .input-detail {

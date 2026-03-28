@@ -22,10 +22,17 @@ const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings');
 const RECORDINGS_INDEX_FILE = path.join(DATA_DIR, 'recordings-index.json');
 const SALESFORCE_TARGET_ORG = process.env.SALESFORCE_TARGET_ORG || 'Elera';
 const SALESFORCE_ACCEPTANCE_OBJECT = 'agf__ADM_Acceptance_Criterion__c';
+const SALESFORCE_WORK_OBJECT = 'agf__ADM_Work__c';
 const SALESFORCE_ACCEPTANCE_FIELDS =
-  'Id, Name, agf__Status__c, agf__Description__c, agf__Work__r.Project__r.Name, agf__Work__r.Name, agf__Work__r.NomeCliente__c';
+  'Id, Name, agf__Status__c, agf__Description__c, agf__Work__c, agf__Work__r.Project__r.Name, agf__Work__r.Name, agf__Work__r.NomeCliente__c';
+const SALESFORCE_FAILED_WORK_TEMPLATE_FIELDS =
+  'Id, Name, agf__Work__c, agf__Work__r.Name, agf__Work__r.Project__r.Name, agf__Work__r.NomeCliente__c, agf__Work__r.agf__Product_Tag__c, agf__Work__r.agf__Product_Tag__r.Name, agf__Work__r.agf__Scrum_Team__c, agf__Work__r.agf__Scrum_Team__r.Name, agf__Work__r.agf__Found_in_Build__c, agf__Work__r.agf__Found_in_Build__r.Name, agf__Work__r.agf__Assignee__c, agf__Work__r.agf__Assignee__r.Name, agf__Work__r.agf__Product_Owner__c, agf__Work__r.agf__Product_Owner__r.Name';
 const SALESFORCE_ID_PATTERN = /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/;
 const SALESFORCE_ACCEPTANCE_STATUS_VALUES = new Set(['Passed', 'Failed']);
+const SALESFORCE_FAILED_WORK_PRIORITY_VALUES = new Set(['P0', 'P1', 'P2']);
+const SALESFORCE_FAILED_WORK_RECORD_TYPE_ID = '0123x000001i4wfAAA';
+const SALESFORCE_FAILED_WORK_COLUMN_ID = 'a0rbJ00000XCel7QAD';
+const SALESFORCE_FAILED_WORK_FOUND_IN_BUILD_ID = 'a0i3x00000vhbUeAAI';
 const SESSION_FILES = [
   path.join(PROFILE_DIR, 'Default', 'Current Session'),
   path.join(PROFILE_DIR, 'Default', 'Current Tabs'),
@@ -84,6 +91,32 @@ const normalizeAcceptanceStatus = (value) => {
   if (normalized === 'failed') return 'Failed';
   return null;
 };
+const normalizeFailedWorkPriority = (value) => {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toUpperCase();
+  if (SALESFORCE_FAILED_WORK_PRIORITY_VALUES.has(normalized)) return normalized;
+  return null;
+};
+const requiredTestCaseMetadata = [
+  { key: 'clientName', label: 'Cliente (agf__Work__r.NomeCliente__c)' },
+  { key: 'projectName', label: 'Projeto (agf__Work__r.Project__r.Name)' },
+  { key: 'workName', label: 'Work (agf__Work__r.Name)' },
+  { key: 'workId', label: 'Work ID (agf__Work__c)' },
+];
+const validateTestCaseMetadataForScenarioSave = (testCase, testCaseId) => {
+  if (!testCase || typeof testCase !== 'object') return;
+  const missingFields = requiredTestCaseMetadata
+    .filter(({ key }) => !normalizeOptionalString(testCase[key]))
+    .map(({ label }) => label);
+  if (!missingFields.length) return;
+  const error = new Error(
+    `Caso de teste ${testCaseId} não pode ser salvo. Faltam dados obrigatórios no Salesforce: ${missingFields.join(
+      ', '
+    )}. Atualize esses campos e tente novamente.`
+  );
+  error.statusCode = 400;
+  throw error;
+};
 const extractScenarioTestCase = (item) => {
   const id = normalizeOptionalString(
     item?.testCase?.id || item?.testCase?.Id || item?.testCaseId
@@ -104,6 +137,12 @@ const extractScenarioTestCase = (item) => {
     ),
     workName: normalizeOptionalString(
       item?.testCase?.workName || item?.testCase?.work || item?.testCaseWorkName
+    ),
+    workId: normalizeOptionalString(
+      item?.testCase?.workId ||
+        item?.testCase?.WorkId ||
+        item?.testCase?.agf__Work__c ||
+        item?.testCaseWorkId
     ),
     status: normalizeAcceptanceStatus(
       item?.testCase?.status ||
@@ -154,6 +193,7 @@ const fetchTestCaseFromSalesforce = async (testCaseId) => {
       ),
       projectName: normalizeOptionalString(record.agf__Work__r?.Project__r?.Name),
       workName: normalizeOptionalString(record.agf__Work__r?.Name),
+      workId: normalizeOptionalString(record.agf__Work__c),
       status: normalizeAcceptanceStatus(record.agf__Status__c),
       description: normalizeOptionalText(record.agf__Description__c),
     };
@@ -275,6 +315,209 @@ const updateAcceptanceCriterionStatus = async (testCaseId, status) => {
     'o status'
   );
   return normalizedStatus;
+};
+const buildFailedWorkTemplateQuery = (testCaseId) =>
+  `SELECT ${SALESFORCE_FAILED_WORK_TEMPLATE_FIELDS} FROM ${SALESFORCE_ACCEPTANCE_OBJECT} WHERE Id = '${testCaseId}'`;
+const fetchFailedWorkTemplateFromSalesforce = async (testCaseId) => {
+  if (!SALESFORCE_ID_PATTERN.test(testCaseId)) {
+    const error = new Error('ID do caso de teste inválido. Use um ID Salesforce com 15 ou 18 caracteres.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const query = buildFailedWorkTemplateQuery(testCaseId);
+  try {
+    const { stdout } = await execFileAsync(
+      'sf',
+      ['data', 'query', '--query', query, '--target-org', SALESFORCE_TARGET_ORG, '--json'],
+      { maxBuffer: 1024 * 1024 }
+    );
+    const payload = JSON.parse(stdout || '{}');
+    const records = Array.isArray(payload?.result?.records) ? payload.result.records : [];
+    const record = records[0];
+    if (!record) {
+      const error = new Error(
+        `Caso de teste ${testCaseId} não encontrado no org ${SALESFORCE_TARGET_ORG}.`
+      );
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const workFoundInBuildId = normalizeOptionalString(record.agf__Work__r?.agf__Found_in_Build__c);
+    const workFoundInBuildName = normalizeOptionalString(record.agf__Work__r?.agf__Found_in_Build__r?.Name);
+    const template = {
+      testCaseId: normalizeOptionalString(record.Id) || testCaseId,
+      testCaseName: normalizeOptionalString(record.Name),
+      workId: normalizeOptionalString(record.agf__Work__c),
+      workName: normalizeOptionalString(record.agf__Work__r?.Name),
+      clientName: normalizeOptionalString(
+        record.agf__Work__r?.NomeCliente__c || record.agf__Work__r?.NomeCliente__C
+      ),
+      projectName: normalizeOptionalString(record.agf__Work__r?.Project__r?.Name),
+      productTagId: normalizeOptionalString(record.agf__Work__r?.agf__Product_Tag__c),
+      productTagName: normalizeOptionalString(record.agf__Work__r?.agf__Product_Tag__r?.Name),
+      scrumTeamId: normalizeOptionalString(record.agf__Work__r?.agf__Scrum_Team__c),
+      scrumTeamName: normalizeOptionalString(record.agf__Work__r?.agf__Scrum_Team__r?.Name),
+      foundInBuildId: SALESFORCE_FAILED_WORK_FOUND_IN_BUILD_ID,
+      foundInBuildName:
+        workFoundInBuildId === SALESFORCE_FAILED_WORK_FOUND_IN_BUILD_ID ? workFoundInBuildName : null,
+      assigneeId: normalizeOptionalString(record.agf__Work__r?.agf__Assignee__c),
+      assigneeName: normalizeOptionalString(record.agf__Work__r?.agf__Assignee__r?.Name),
+      productOwnerId: normalizeOptionalString(record.agf__Work__r?.agf__Product_Owner__c),
+      productOwnerName: normalizeOptionalString(record.agf__Work__r?.agf__Product_Owner__r?.Name),
+    };
+    const suggestedWorkName = truncateText(
+      [template.workName, template.testCaseName].filter(Boolean).join(' - '),
+      255
+    );
+    template.suggestedWorkName = suggestedWorkName || null;
+
+    if (!template.workId) {
+      const error = new Error(
+        `O caso de teste ${testCaseId} não possui Work vinculada para preencher agf__Related_Work__c.`
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+
+    return template;
+  } catch (error) {
+    if (error.statusCode) throw error;
+    const stderr = normalizeOptionalString(error.stderr);
+    const stdout = normalizeOptionalString(error.stdout);
+    const detail = stderr || stdout || normalizeOptionalString(error.message) || 'Erro desconhecido.';
+    const wrappedError = new Error(
+      `Falha ao consultar os dados da Work no Salesforce para o caso ${testCaseId}: ${detail}`
+    );
+    wrappedError.statusCode = error.code === 'ENOENT' ? 500 : 502;
+    throw wrappedError;
+  }
+};
+const truncateText = (value, limit) => {
+  const text = String(value || '');
+  if (!Number.isInteger(limit) || limit <= 0) return text;
+  return text.length > limit ? text.slice(0, limit) : text;
+};
+const buildSuggestedFailedWorkName = (scenario, template) => {
+  const workName =
+    normalizeOptionalString(template?.workName) || normalizeOptionalString(scenario?.testCase?.workName);
+  const caseName =
+    normalizeOptionalString(scenario?.testCase?.name) ||
+    normalizeOptionalString(template?.testCaseName) ||
+    normalizeOptionalString(scenario?.name);
+  const joined = [workName, caseName].filter(Boolean).join(' - ');
+  if (joined) return truncateText(joined, 255);
+  if (workName) return truncateText(workName, 255);
+  if (caseName) return truncateText(caseName, 255);
+  return 'Nova Work relacionada';
+};
+const salesforceErrorMessage = (payload, fallback = '') => {
+  if (Array.isArray(payload)) {
+    const detail = payload
+      .map((item) => normalizeOptionalString(item?.message))
+      .filter(Boolean)
+      .join(' | ');
+    return detail || fallback;
+  }
+  if (payload && typeof payload === 'object') {
+    return (
+      normalizeOptionalString(payload.message) ||
+      normalizeOptionalString(payload.error) ||
+      normalizeOptionalString(payload[0]?.message) ||
+      fallback
+    );
+  }
+  return fallback;
+};
+const createRelatedFailedWorkRecord = async ({ scenario, template, name, description, priority }) => {
+  const normalizedPriority = normalizeFailedWorkPriority(priority);
+  if (!normalizedPriority) {
+    const error = new Error('Prioridade inválida. Use P0, P1 ou P2.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const rawName = typeof name === 'string' ? name.trim() : '';
+  const normalizedName = truncateText(rawName || buildSuggestedFailedWorkName(scenario, template), 255).trim();
+  if (!normalizedName) {
+    const error = new Error('Informe o assunto da nova Work.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const rawDescription = typeof description === 'string' ? description.replace(/\r\n/g, '\n') : '';
+  if (!rawDescription.trim()) {
+    const error = new Error('Descrição obrigatória para criar a Work relacionada.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const relatedWorkId = normalizeOptionalString(template?.workId);
+  if (!relatedWorkId) {
+    const error = new Error('Work vinculada não encontrada para preencher agf__Related_Work__c.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const payload = {
+    agf__Subject__c: normalizedName,
+    agf__Details_and_Steps_to_Reproduce__c: rawDescription,
+    agf__Status__c: 'Waiting',
+    agf__Priority__c: normalizedPriority,
+    agf__Related_Work__c: relatedWorkId,
+    agf__Found_in_Build__c: SALESFORCE_FAILED_WORK_FOUND_IN_BUILD_ID,
+    agf__Column__c: SALESFORCE_FAILED_WORK_COLUMN_ID,
+    RecordTypeId: SALESFORCE_FAILED_WORK_RECORD_TYPE_ID,
+  };
+  const optionalFields = {
+    agf__Product_Tag__c: normalizeOptionalString(template?.productTagId),
+    agf__Scrum_Team__c: normalizeOptionalString(template?.scrumTeamId),
+    agf__Assignee__c: normalizeOptionalString(template?.assigneeId),
+    agf__Product_Owner__c: normalizeOptionalString(template?.productOwnerId),
+  };
+  Object.entries(optionalFields).forEach(([field, value]) => {
+    if (value) payload[field] = value;
+  });
+
+  const { accessToken, instanceUrl, apiVersion } = await getSalesforceConnection();
+  const endpoint = `${instanceUrl}/services/data/v${apiVersion}/sobjects/${encodeURIComponent(
+    SALESFORCE_WORK_OBJECT
+  )}`;
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail = salesforceErrorMessage(body, `HTTP ${response.status}`);
+      const error = new Error(`Falha ao criar Work relacionada no Salesforce: ${detail}`);
+      error.statusCode = response.status >= 500 ? 502 : response.status;
+      throw error;
+    }
+
+    if (body && typeof body === 'object' && body.success === false) {
+      const detail = salesforceErrorMessage(body.errors, 'Salesforce retornou falha na criação.');
+      const error = new Error(`Falha ao criar Work relacionada no Salesforce: ${detail}`);
+      error.statusCode = 502;
+      throw error;
+    }
+
+    return {
+      id: normalizeOptionalString(body?.id),
+      name: normalizedName,
+      subject: payload.agf__Subject__c,
+      priority: normalizedPriority,
+      relatedWorkId,
+    };
+  } catch (error) {
+    if (error.statusCode) throw error;
+    const detail = normalizeOptionalString(error.message) || 'Erro desconhecido.';
+    const wrappedError = new Error(`Falha ao criar Work relacionada no Salesforce: ${detail}`);
+    wrappedError.statusCode = 502;
+    throw wrappedError;
+  }
 };
 const syncTestCaseDescription = (testCaseId, description) => {
   const normalizedDescription = normalizeOptionalText(description);
@@ -501,6 +744,7 @@ const scenarioSummary = (scenario) => ({
         clientName: scenario.testCase.clientName || null,
         projectName: scenario.testCase.projectName || null,
         workName: scenario.testCase.workName || null,
+        workId: scenario.testCase.workId || null,
         status: scenario.testCase.status || null,
         description: scenario.testCase.description || null,
       }
@@ -2477,6 +2721,9 @@ app.post('/api/scenarios/save', async (req, res) => {
 
   try {
     const testCase = testCaseId ? await fetchTestCaseFromSalesforce(testCaseId) : null;
+    if (testCaseId) {
+      validateTestCaseMetadataForScenarioSave(testCase, testCaseId);
+    }
     const scenario = {
       id: generateId('scn'),
       name: name || testCase?.name || `Cenário ${state.savedScenarios.length + 1}`,
@@ -2596,6 +2843,65 @@ app.post('/api/scenarios/:id/test-case/status', async (req, res) => {
         ...(scenario.testCase || { id: testCaseId }),
         status: normalizedStatus,
       },
+    });
+  } catch (error) {
+    return res.status(Number(error.statusCode) || 500).json({ error: error.message });
+  }
+});
+
+app.get('/api/scenarios/:id/test-case/failed-work/template', async (req, res) => {
+  const scenario = state.savedScenarios.find((item) => item.id === req.params.id);
+  if (!scenario) return res.status(404).json({ error: 'Cenário não encontrado.' });
+  const testCaseId = normalizeOptionalString(scenario?.testCase?.id);
+  if (!testCaseId) {
+    return res.status(400).json({ error: 'Este cenário não possui caso de teste Salesforce vinculado.' });
+  }
+
+  try {
+    const template = await fetchFailedWorkTemplateFromSalesforce(testCaseId);
+    return res.json({
+      ok: true,
+      template,
+    });
+  } catch (error) {
+    return res.status(Number(error.statusCode) || 500).json({ error: error.message });
+  }
+});
+
+app.post('/api/scenarios/:id/test-case/failed-work', async (req, res) => {
+  const scenario = state.savedScenarios.find((item) => item.id === req.params.id);
+  if (!scenario) return res.status(404).json({ error: 'Cenário não encontrado.' });
+  const testCaseId = normalizeOptionalString(scenario?.testCase?.id);
+  if (!testCaseId) {
+    return res.status(400).json({ error: 'Este cenário não possui caso de teste Salesforce vinculado.' });
+  }
+  const name = typeof req.body?.name === 'string' ? req.body.name : '';
+  const description = typeof req.body?.description === 'string' ? req.body.description : '';
+  const priority = typeof req.body?.priority === 'string' ? req.body.priority : '';
+  if (!name.trim()) {
+    return res.status(400).json({ error: 'Informe o assunto da nova Work.' });
+  }
+  const normalizedPriority = normalizeFailedWorkPriority(priority);
+  if (!normalizedPriority) {
+    return res.status(400).json({ error: 'Prioridade inválida. Use P0, P1 ou P2.' });
+  }
+  if (!description.replace(/\r\n/g, '\n').trim()) {
+    return res.status(400).json({ error: 'Informe a descrição da falha.' });
+  }
+
+  try {
+    const template = await fetchFailedWorkTemplateFromSalesforce(testCaseId);
+    const createdWork = await createRelatedFailedWorkRecord({
+      scenario,
+      template,
+      name,
+      description,
+      priority: normalizedPriority,
+    });
+    return res.json({
+      ok: true,
+      template,
+      work: createdWork,
     });
   } catch (error) {
     return res.status(Number(error.statusCode) || 500).json({ error: error.message });

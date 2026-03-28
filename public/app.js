@@ -36,6 +36,16 @@ const scenarioDescriptionStatus = document.getElementById('scenarioDescriptionSt
 const scenarioRecordingsAccordion = document.getElementById('scenarioRecordingsAccordion');
 const scenarioRecordingsRefresh = document.getElementById('scenarioRecordingsRefresh');
 const scenarioRecordingsList = document.getElementById('scenarioRecordingsList');
+const failedWorkModal = document.getElementById('failedWorkModal');
+const failedWorkClose = document.getElementById('failedWorkClose');
+const failedWorkCancel = document.getElementById('failedWorkCancel');
+const failedWorkSource = document.getElementById('failedWorkSource');
+const failedWorkSummary = document.getElementById('failedWorkSummary');
+const failedWorkNameInput = document.getElementById('failedWorkNameInput');
+const failedWorkDescriptionInput = document.getElementById('failedWorkDescriptionInput');
+const failedWorkPriorityInput = document.getElementById('failedWorkPriorityInput');
+const failedWorkCreate = document.getElementById('failedWorkCreate');
+const failedWorkStatus = document.getElementById('failedWorkStatus');
 
 const urlInput = document.getElementById('urlInput');
 const scenarioNameInput = document.getElementById('scenarioName');
@@ -72,6 +82,7 @@ const state = {
 
 let currentScenarioDetails = null;
 let currentScenarioRecordings = [];
+let pendingFailedWorkContext = null;
 let scenarioCompletionTimeout = null;
 const workspacePanels = {
   main: workspacePanelMain,
@@ -183,6 +194,131 @@ const setScenarioStatusFeedback = (message, tone = '') => {
   scenarioStatusStatus.className = 'hint description-status';
   if (tone === 'success' || tone === 'error') {
     scenarioStatusStatus.classList.add(tone);
+  }
+};
+const normalizeFailedWorkPriority = (value) => {
+  const normalized = String(value || '').trim().toUpperCase();
+  if (normalized === 'P0' || normalized === 'P1' || normalized === 'P2') return normalized;
+  return '';
+};
+const setFailedWorkStatus = (message, tone = '') => {
+  if (!failedWorkStatus) return;
+  failedWorkStatus.textContent = message || '';
+  failedWorkStatus.className = 'hint description-status';
+  if (tone === 'success' || tone === 'error') {
+    failedWorkStatus.classList.add(tone);
+  }
+};
+const setFailedWorkControlsDisabled = (disabled) => {
+  if (failedWorkNameInput) failedWorkNameInput.disabled = disabled;
+  if (failedWorkDescriptionInput) failedWorkDescriptionInput.disabled = disabled;
+  if (failedWorkPriorityInput) failedWorkPriorityInput.disabled = disabled;
+  if (failedWorkCreate) failedWorkCreate.disabled = disabled;
+};
+const formatNameWithId = (name, id) => {
+  const normalizedName = String(name || '').trim();
+  const normalizedId = String(id || '').trim();
+  if (normalizedName && normalizedId) return `${normalizedName} (${normalizedId})`;
+  if (normalizedName) return normalizedName;
+  if (normalizedId) return normalizedId;
+  return '—';
+};
+const buildFailedWorkNameDefault = (scenario, template = null) => {
+  const fromTemplate = String(template?.suggestedWorkName || '').trim();
+  if (fromTemplate) return fromTemplate;
+  const workName = String(template?.workName || scenario?.testCase?.workName || '').trim();
+  const testCaseName = String(scenario?.testCase?.name || template?.testCaseName || scenario?.name || '').trim();
+  const joined = [workName, testCaseName].filter(Boolean).join(' - ');
+  return joined || workName || testCaseName;
+};
+const renderFailedWorkSummary = (template) => {
+  if (!failedWorkSummary) return;
+  if (!template || typeof template !== 'object') {
+    failedWorkSummary.innerHTML = '<div class="meta">Carregando dados da Work vinculada...</div>';
+    return;
+  }
+  const line = (label, value) =>
+    `<div class="meta"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value || '—')}</div>`;
+  failedWorkSummary.innerHTML = `
+    <div class="title">${escapeHtml(formatNameWithId(template.workName, template.workId))}</div>
+    ${line('Cliente', template.clientName)}
+    ${line('Projeto', template.projectName)}
+    ${line('Work', formatNameWithId(template.workName, template.workId))}
+    ${line('Product Tag', formatNameWithId(template.productTagName, template.productTagId))}
+    ${line('Scrum Team', formatNameWithId(template.scrumTeamName, template.scrumTeamId))}
+    ${line('Found in Build', formatNameWithId(template.foundInBuildName, template.foundInBuildId))}
+    ${line('Assignee', formatNameWithId(template.assigneeName, template.assigneeId))}
+    ${line('Product Owner', formatNameWithId(template.productOwnerName, template.productOwnerId))}
+  `;
+};
+const closeFailedWorkModal = () => {
+  if (!failedWorkModal) return;
+  failedWorkModal.classList.add('hidden');
+  failedWorkModal.setAttribute('aria-hidden', 'true');
+  pendingFailedWorkContext = null;
+  if (failedWorkSource) failedWorkSource.textContent = '';
+  if (failedWorkNameInput) failedWorkNameInput.value = '';
+  if (failedWorkDescriptionInput) failedWorkDescriptionInput.value = '';
+  if (failedWorkPriorityInput) failedWorkPriorityInput.value = 'P1';
+  if (failedWorkSummary) failedWorkSummary.innerHTML = '';
+  setFailedWorkStatus('');
+  setFailedWorkControlsDisabled(false);
+};
+const openFailedWorkModal = async (scenario) => {
+  if (!failedWorkModal) return;
+  const scenarioId = String(scenario?.id || '').trim();
+  const testCaseId = String(scenario?.testCase?.id || '').trim();
+  if (!scenarioId || !testCaseId) return;
+
+  pendingFailedWorkContext = {
+    scenarioId,
+    testCaseId,
+    template: null,
+  };
+
+  if (failedWorkSource) {
+    const testCaseName = String(scenario?.testCase?.name || '').trim() || 'Caso sem nome';
+    const scenarioName = String(scenario?.name || '').trim() || 'Cenário sem nome';
+    failedWorkSource.textContent = `Caso: ${testCaseName} · Cenário: ${scenarioName}`;
+  }
+  if (failedWorkNameInput) {
+    failedWorkNameInput.value = buildFailedWorkNameDefault(scenario);
+  }
+  if (failedWorkDescriptionInput) {
+    const fallbackDescription =
+      typeof scenarioDescriptionInput?.value === 'string' && scenarioDescriptionInput.value.length
+        ? scenarioDescriptionInput.value
+        : typeof scenario?.testCase?.description === 'string'
+          ? scenario.testCase.description
+          : '';
+    failedWorkDescriptionInput.value = fallbackDescription;
+  }
+  if (failedWorkPriorityInput) failedWorkPriorityInput.value = 'P1';
+  renderFailedWorkSummary(null);
+  setFailedWorkStatus('Carregando dados da Work do caso de teste...');
+  setFailedWorkControlsDisabled(true);
+  failedWorkModal.classList.remove('hidden');
+  failedWorkModal.setAttribute('aria-hidden', 'false');
+
+  try {
+    const response = await apiRequest(`/api/scenarios/${scenarioId}/test-case/failed-work/template`);
+    const payload = await response.json().catch(() => ({}));
+    const template = payload?.template && typeof payload.template === 'object' ? payload.template : null;
+    if (!template || !template.workId) {
+      throw new Error('Não foi possível obter os dados da Work vinculada ao caso de teste.');
+    }
+    pendingFailedWorkContext = {
+      ...pendingFailedWorkContext,
+      template,
+    };
+    if (failedWorkNameInput && !failedWorkNameInput.value.trim()) {
+      failedWorkNameInput.value = buildFailedWorkNameDefault(scenario, template);
+    }
+    renderFailedWorkSummary(template);
+    setFailedWorkStatus('Dados carregados. Informe a descrição e selecione a prioridade.');
+    setFailedWorkControlsDisabled(false);
+  } catch (error) {
+    setFailedWorkStatus(error.message || 'Falha ao carregar dados da Work vinculada.', 'error');
   }
 };
 const renderScenarioDescription = (scenario) => {
@@ -652,6 +788,7 @@ const openScenarioEvidence = async (id) => {
 
 const closeScenarioDetails = () => {
   if (!scenarioModal) return;
+  closeFailedWorkModal();
   scenarioModal.classList.add('hidden');
   scenarioModal.setAttribute('aria-hidden', 'true');
   currentScenarioDetails = null;
@@ -1097,12 +1234,19 @@ if (queueResumeBtn) {
 saveScenarioBtn.addEventListener('click', async () => {
   const name = scenarioNameInput.value.trim();
   const testCaseId = scenarioTestCaseIdInput ? scenarioTestCaseIdInput.value.trim() : '';
-  await apiRequest('/api/scenarios/save', {
-    method: 'POST',
-    body: JSON.stringify({ name, testCaseId }),
-  });
-  scenarioNameInput.value = '';
-  if (scenarioTestCaseIdInput) scenarioTestCaseIdInput.value = '';
+  try {
+    await apiRequest('/api/scenarios/save', {
+      method: 'POST',
+      body: JSON.stringify({ name, testCaseId }),
+    });
+    scenarioNameInput.value = '';
+    if (scenarioTestCaseIdInput) scenarioTestCaseIdInput.value = '';
+  } catch (error) {
+    window.alert(
+      error.message ||
+        'Não foi possível salvar o cenário. Corrija os dados do caso de teste no Salesforce e tente novamente.'
+    );
+  }
 });
 
 openUrlBtn.addEventListener('click', async () => {
@@ -1412,6 +1556,11 @@ if (scenarioStatusSave) {
 
       if (scenarioStatusInput) scenarioStatusInput.value = normalizedStatus;
       setScenarioStatusFeedback('Status atualizado com sucesso.', 'success');
+      if (normalizedStatus === 'Failed') {
+        await openFailedWorkModal(currentScenarioDetails);
+      } else if (failedWorkModal && !failedWorkModal.classList.contains('hidden')) {
+        closeFailedWorkModal();
+      }
     } catch (error) {
       setScenarioStatusFeedback(error.message || 'Falha ao atualizar status.', 'error');
     } finally {
@@ -1419,6 +1568,74 @@ if (scenarioStatusSave) {
       if (scenarioStatusInput) scenarioStatusInput.disabled = false;
     }
   });
+}
+
+if (failedWorkCreate) {
+  failedWorkCreate.addEventListener('click', async () => {
+    const scenarioId = String(pendingFailedWorkContext?.scenarioId || '').trim();
+    if (!scenarioId) {
+      setFailedWorkStatus('Fluxo inválido. Atualize o status para Failed novamente.', 'error');
+      return;
+    }
+    const workName = typeof failedWorkNameInput?.value === 'string' ? failedWorkNameInput.value.trim() : '';
+    if (!workName) {
+      setFailedWorkStatus('Preencha o assunto da nova Work para continuar.', 'error');
+      return;
+    }
+    const description = typeof failedWorkDescriptionInput?.value === 'string'
+      ? failedWorkDescriptionInput.value.replace(/\r\n/g, '\n')
+      : '';
+    if (!description.trim()) {
+      setFailedWorkStatus('Preencha a descrição da falha para continuar.', 'error');
+      return;
+    }
+    const priority = normalizeFailedWorkPriority(failedWorkPriorityInput ? failedWorkPriorityInput.value : '');
+    if (!priority) {
+      setFailedWorkStatus('Selecione uma prioridade válida (P0, P1 ou P2).', 'error');
+      return;
+    }
+
+    setFailedWorkStatus('Criando Work relacionada no Salesforce...');
+    setFailedWorkControlsDisabled(true);
+
+    try {
+      const response = await apiRequest(`/api/scenarios/${scenarioId}/test-case/failed-work`, {
+        method: 'POST',
+        body: JSON.stringify({ name: workName, description, priority }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      const createdWork = payload?.work && typeof payload.work === 'object' ? payload.work : {};
+      const workId = String(createdWork.id || '').trim();
+      const idSuffix = workId ? ` (${workId})` : '';
+      const createdName = String(createdWork.name || workName).trim();
+      const nameSuffix = createdName ? ` ${createdName}` : '';
+      setFailedWorkStatus(`Work relacionada criada com sucesso:${nameSuffix}${idSuffix}.`, 'success');
+      setScenarioStatusFeedback(`Status atualizado e Work relacionada criada${idSuffix}.`, 'success');
+      if (payload?.template && typeof payload.template === 'object') {
+        renderFailedWorkSummary(payload.template);
+      }
+      window.setTimeout(() => {
+        closeFailedWorkModal();
+      }, 1200);
+    } catch (error) {
+      setFailedWorkStatus(error.message || 'Falha ao criar Work relacionada.', 'error');
+      setScenarioStatusFeedback(
+        'Status atualizado para Failed, mas a Work relacionada não foi criada.',
+        'error'
+      );
+    } finally {
+      if (!failedWorkModal || failedWorkModal.classList.contains('hidden')) return;
+      setFailedWorkControlsDisabled(false);
+    }
+  });
+}
+
+if (failedWorkClose) {
+  failedWorkClose.addEventListener('click', () => closeFailedWorkModal());
+}
+
+if (failedWorkCancel) {
+  failedWorkCancel.addEventListener('click', () => closeFailedWorkModal());
 }
 
 if (scenarioModalClose) {
@@ -1432,9 +1649,20 @@ if (scenarioModal) {
   });
 }
 
+if (failedWorkModal) {
+  failedWorkModal.addEventListener('click', (event) => {
+    const closeTarget = event.target.closest('[data-action="close"]');
+    if (closeTarget) closeFailedWorkModal();
+  });
+}
+
 if (typeof document !== 'undefined') {
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    if (failedWorkModal && !failedWorkModal.classList.contains('hidden')) {
+      closeFailedWorkModal();
+      return;
+    }
     if (!scenarioModal || scenarioModal.classList.contains('hidden')) return;
     closeScenarioDetails();
   });

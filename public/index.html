@@ -300,6 +300,50 @@
           </div>
         </div>
       </div>
+
+      <div class="modal hidden" id="failedWorkModal" aria-hidden="true">
+        <div class="modal-backdrop" data-action="close"></div>
+        <div class="modal-card modal-card-compact">
+          <div class="modal-header">
+            <div>
+              <h2>Criar Work relacionada</h2>
+              <p class="hint">Status Failed detectado. Preencha a descrição da falha para abrir a Work automaticamente.</p>
+            </div>
+            <button id="failedWorkClose" type="button">Fechar</button>
+          </div>
+          <div class="modal-body">
+            <p id="failedWorkSource" class="hint"></p>
+            <div id="failedWorkSummary" class="list-item failed-work-summary"></div>
+            <p class="hint">Campo <span class="mono">agf__Subject__c</span> da nova Work.</p>
+            <input
+              id="failedWorkNameInput"
+              type="text"
+              placeholder="Assunto da nova Work"
+            />
+            <p class="hint">Campo <span class="mono">agf__Details_and_Steps_to_Reproduce__c</span>.</p>
+            <textarea
+              id="failedWorkDescriptionInput"
+              rows="7"
+              placeholder="Descreva a falha observada e os passos para reproduzir"
+            ></textarea>
+            <p class="hint">Campo <span class="mono">agf__Priority__c</span>.</p>
+            <div class="input-row">
+              <select id="failedWorkPriorityInput">
+                <option value="P0">P0</option>
+                <option value="P1" selected>P1</option>
+                <option value="P2">P2</option>
+              </select>
+            </div>
+            <p id="failedWorkStatus" class="hint description-status"></p>
+          </div>
+          <div class="modal-actions modal-actions-spread">
+            <button id="failedWorkCancel" type="button">Cancelar</button>
+            <button id="failedWorkCreate" class="primary" type="button">
+              Criar Work relacionada
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script src="/app.js"></script>
