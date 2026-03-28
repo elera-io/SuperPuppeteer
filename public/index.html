@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SuperPuppeteer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div class="brand-panel">
+          <div class="brand">
+            <div class="brand-icon" aria-hidden="true">
+              <svg viewBox="0 0 64 64" role="img">
+                <defs>
+                  <linearGradient id="cape" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0%" stop-color="#ff8c42" />
+                    <stop offset="100%" stop-color="#ff3d3d" />
+                  </linearGradient>
+                </defs>
+                <circle cx="32" cy="24" r="10" fill="#f5f6f7" />
+                <rect x="22" y="34" width="20" height="16" rx="8" fill="#f5f6f7" />
+                <path
+                  d="M14 34 L32 44 L50 34 L56 50 L8 50 Z"
+                  fill="url(#cape)"
+                />
+                <circle cx="28" cy="22" r="2" fill="#1b1f24" />
+                <circle cx="36" cy="22" r="2" fill="#1b1f24" />
+                <path d="M28 27 Q32 30 36 27" stroke="#1b1f24" stroke-width="2" fill="none" />
+              </svg>
+            </div>
+            <div>
+              <p class="brand-title">SuperPuppeteer</p>
+              <p class="brand-subtitle">Workspace de QA para gravação, replay e gestão de cenários</p>
+            </div>
+          </div>
+        </div>
+        <div class="status-card">
+          <p class="status-title">Monitor da Sessão</p>
+          <div class="status-pill" id="statusPill">Idle</div>
+          <div class="status-meta">
+            <span class="label">Eventos</span>
+            <span class="value" id="eventCount">0</span>
+          </div>
+          <div class="status-meta" id="lastInfo">
+            <span class="label">Última sessão</span>
+            <span class="value">—</span>
+          </div>
+          <div class="status-meta">
+            <span class="label">Última tecla</span>
+            <span class="value key-indicator" id="lastKey">—</span>
+          </div>
+        </div>
+      </header>
+
+      <section class="controls">
+        <div class="card card-wide nav-card">
+          <p class="card-eyebrow">Ambiente</p>
+          <h2>Navegação</h2>
+          <p class="card-desc">Abra a aplicação alvo antes de iniciar a captura para manter contexto estável.</p>
+          <div class="input-row">
+            <input id="urlInput" type="text" placeholder="https://sua-aplicacao.com" />
+            <button id="openUrlBtn">Abrir URL</button>
+          </div>
+          <p class="hint">Dica: use ambientes homolog/uat para registrar cenários de regressão.</p>
+        </div>
+
+        <div class="card">
+          <p class="card-eyebrow">Captura</p>
+          <h2>Gravação</h2>
+          <p class="card-desc">Registre a jornada de teste exatamente como o QA executa no navegador.</p>
+          <div class="button-row">
+            <button id="startBtn" class="primary">Iniciar</button>
+            <button id="pauseBtn">Pausar</button>
+            <button id="resumeBtn">Retomar</button>
+            <button id="stopBtn">Encerrar gravação</button>
+          </div>
+          <div class="button-row">
+            <button id="exportBtn">Export JSON</button>
+            <button id="closeBtn" class="danger">Encerrar sessão (Chrome)</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <p class="card-eyebrow">Execução</p>
+          <h2>Replay</h2>
+          <p class="card-desc">Reproduza o fluxo e gere evidência em vídeo quando necessário.</p>
+          <div class="input-row">
+            <input id="replayUrl" type="text" placeholder="URL de execução (opcional)" />
+          </div>
+          <div class="button-row">
+            <button id="recordVideoToggle" type="button">Gravar vídeo: OFF</button>
+          </div>
+          <div class="button-row">
+            <button id="replayLastBtn" class="primary">Reproduzir último</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <p class="card-eyebrow">Biblioteca</p>
+          <h2>Salvar cenário</h2>
+          <p class="card-desc">Versione cenários por nome para reutilização em ciclos de qualidade.</p>
+          <div class="input-row">
+            <input id="scenarioName" type="text" placeholder="Nome do cenário" />
+            <input
+              id="scenarioTestCaseId"
+              type="text"
+              placeholder="ID do caso de teste Salesforce (opcional)"
+            />
+            <button id="saveScenarioBtn">Salvar</button>
+          </div>
+          <div class="button-row">
+            <button id="exportScenariosBtn">Exportar cenários</button>
+            <button id="importScenariosBtn">Importar cenários</button>
+            <input id="importScenariosInput" type="file" accept="application/json" hidden />
+          </div>
+          <p class="hint">
+            O cenário copia a última gravação encerrada. Ao informar o ID, o nome do caso, projeto e
+            work são buscados automaticamente no Salesforce.
+          </p>
+        </div>
+      </section>
+
+      <div id="scenarioCompletionBanner" class="scenario-completion-banner hidden" aria-live="polite"></div>
+
+      <div class="workspace-tabs" role="tablist" aria-label="Guias do workspace">
+        <button
+          id="workspaceTabMain"
+          class="workspace-tab active"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="workspacePanelMain"
+          data-workspace-tab="main"
+        >
+          Operação
+        </button>
+        <button
+          id="workspaceTabScenarios"
+          class="workspace-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="workspacePanelScenarios"
+          data-workspace-tab="scenarios"
+        >
+          Cenários salvos
+        </button>
+      </div>
+
+      <section
+        id="workspacePanelMain"
+        class="workspace-panel active"
+        role="tabpanel"
+        aria-labelledby="workspaceTabMain"
+      >
+        <section class="grid">
+          <details class="card list-card card-wide accordion-card">
+            <summary class="card-header accordion-toggle">
+              <h2>Ações capturadas</h2>
+              <span class="chip" id="actionsHint">Live</span>
+            </summary>
+            <div class="accordion-body">
+              <div id="eventsList" class="list"></div>
+            </div>
+          </details>
+
+          <details class="card list-card card-wide accordion-card">
+            <summary class="card-header accordion-toggle">
+              <h2>Log de Timing</h2>
+              <span class="chip">Replay</span>
+            </summary>
+            <div class="accordion-body">
+              <div id="replayLogList" class="list"></div>
+            </div>
+          </details>
+
+          <details class="card list-card card-wide accordion-card">
+            <summary class="card-header accordion-toggle">
+              <h2>Fila de cenários</h2>
+              <span class="chip">Sequência</span>
+            </summary>
+            <div class="accordion-body">
+              <div class="button-row queue-controls">
+                <button id="queueRunBtn" class="primary">Executar fila</button>
+                <button id="queuePauseBtn">Pausar fila</button>
+                <button id="queueResumeBtn">Retomar fila</button>
+              </div>
+              <div id="queueList" class="list"></div>
+            </div>
+          </details>
+
+          <details class="card list-card card-wide accordion-card">
+            <summary class="card-header accordion-toggle">
+              <h2>Biblioteca de Capturas</h2>
+              <span class="chip">Vídeos</span>
+            </summary>
+            <div class="accordion-body">
+              <div class="button-row queue-controls">
+                <button id="refreshRecordingsBtn">Atualizar biblioteca</button>
+              </div>
+              <div id="recordingsList" class="list"></div>
+            </div>
+          </details>
+        </section>
+      </section>
+
+      <section
+        id="workspacePanelScenarios"
+        class="workspace-panel"
+        role="tabpanel"
+        aria-labelledby="workspaceTabScenarios"
+        hidden
+      >
+        <div class="card list-card card-wide scenario-tab-card">
+          <div class="card-header">
+            <h2>Cenários salvos</h2>
+            <span class="chip">Biblioteca</span>
+          </div>
+          <div class="accordion-body">
+            <div class="input-row scenario-filters">
+              <select id="savedScenarioProjectFilter">
+                <option value="">Todos os projetos</option>
+              </select>
+              <select id="savedScenarioWorkFilter">
+                <option value="">Todos os works</option>
+              </select>
+            </div>
+            <div id="savedScenariosList" class="list"></div>
+          </div>
+        </div>
+      </section>
+
+      <div class="modal hidden" id="scenarioModal" aria-hidden="true">
+        <div class="modal-backdrop" data-action="close"></div>
+        <div class="modal-card">
+          <div class="modal-header">
+            <div>
+              <h2 id="scenarioModalTitle">Detalhes do cenário</h2>
+              <p class="hint">Personalize os valores que serão inseridos em campos de input.</p>
+            </div>
+            <button id="scenarioModalClose">Fechar</button>
+          </div>
+          <div class="modal-body">
+            <details id="scenarioDescriptionAccordion" class="list-item accordion-card description-accordion" hidden>
+              <summary class="card-header accordion-toggle">
+                <h2>Descrição do critério de aceite</h2>
+                <span class="chip">Salesforce</span>
+              </summary>
+              <div class="accordion-body">
+                <p class="hint">Campo <span class="mono">agf__Status__c</span> do critério de aceite.</p>
+                <div class="input-row">
+                  <select id="scenarioStatusInput">
+                    <option value="">Selecione o status</option>
+                    <option value="Passed">Passed</option>
+                    <option value="Failed">Failed</option>
+                  </select>
+                  <button id="scenarioStatusSave" class="primary" type="button">
+                    Atualizar status
+                  </button>
+                </div>
+                <p id="scenarioStatusStatus" class="hint description-status"></p>
+                <p class="hint">Campo <span class="mono">agf__Description__c</span> do critério de aceite.</p>
+                <textarea
+                  id="scenarioDescriptionInput"
+                  rows="7"
+                  placeholder="Descrição do critério de aceite"
+                ></textarea>
+                <div class="button-row">
+                  <button id="scenarioDescriptionSave" class="primary" type="button">
+                    Atualizar descrição
+                  </button>
+                </div>
+                <p id="scenarioDescriptionStatus" class="hint description-status"></p>
+              </div>
+            </details>
+            <details id="scenarioRecordingsAccordion" class="list-item accordion-card scenario-recordings-accordion" hidden>
+              <summary class="card-header accordion-toggle">
+                <h2>Execuções do cenário</h2>
+                <span class="chip">Vídeos</span>
+              </summary>
+              <div class="accordion-body">
+                <div class="button-row">
+                  <button id="scenarioRecordingsRefresh" type="button">Atualizar execuções</button>
+                </div>
+                <div id="scenarioRecordingsList" class="list"></div>
+              </div>
+            </details>
+            <div id="scenarioInputsList" class="list"></div>
+          </div>
+          <div class="modal-actions">
+            <button id="scenarioInputsSave" class="primary">Salvar alterações</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

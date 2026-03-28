@@ -1,0 +1,1340 @@
+const statusPill = document.getElementById('statusPill');
+const eventCount = document.getElementById('eventCount');
+const lastInfo = document.getElementById('lastInfo');
+const actionsHint = document.getElementById('actionsHint');
+const lastKeyEl = document.getElementById('lastKey');
+
+const startBtn = document.getElementById('startBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const resumeBtn = document.getElementById('resumeBtn');
+const stopBtn = document.getElementById('stopBtn');
+const exportBtn = document.getElementById('exportBtn');
+const closeBtn = document.getElementById('closeBtn');
+const replayLastBtn = document.getElementById('replayLastBtn');
+const saveScenarioBtn = document.getElementById('saveScenarioBtn');
+const openUrlBtn = document.getElementById('openUrlBtn');
+const exportScenariosBtn = document.getElementById('exportScenariosBtn');
+const importScenariosBtn = document.getElementById('importScenariosBtn');
+const importScenariosInput = document.getElementById('importScenariosInput');
+const replayUrlInput = document.getElementById('replayUrl');
+const recordVideoToggle = document.getElementById('recordVideoToggle');
+const queueRunBtn = document.getElementById('queueRunBtn');
+const queuePauseBtn = document.getElementById('queuePauseBtn');
+const queueResumeBtn = document.getElementById('queueResumeBtn');
+const refreshRecordingsBtn = document.getElementById('refreshRecordingsBtn');
+const scenarioModal = document.getElementById('scenarioModal');
+const scenarioModalTitle = document.getElementById('scenarioModalTitle');
+const scenarioModalClose = document.getElementById('scenarioModalClose');
+const scenarioInputsList = document.getElementById('scenarioInputsList');
+const scenarioInputsSave = document.getElementById('scenarioInputsSave');
+const scenarioDescriptionAccordion = document.getElementById('scenarioDescriptionAccordion');
+const scenarioStatusInput = document.getElementById('scenarioStatusInput');
+const scenarioStatusSave = document.getElementById('scenarioStatusSave');
+const scenarioStatusStatus = document.getElementById('scenarioStatusStatus');
+const scenarioDescriptionInput = document.getElementById('scenarioDescriptionInput');
+const scenarioDescriptionSave = document.getElementById('scenarioDescriptionSave');
+const scenarioDescriptionStatus = document.getElementById('scenarioDescriptionStatus');
+const scenarioRecordingsAccordion = document.getElementById('scenarioRecordingsAccordion');
+const scenarioRecordingsRefresh = document.getElementById('scenarioRecordingsRefresh');
+const scenarioRecordingsList = document.getElementById('scenarioRecordingsList');
+
+const urlInput = document.getElementById('urlInput');
+const scenarioNameInput = document.getElementById('scenarioName');
+const scenarioTestCaseIdInput = document.getElementById('scenarioTestCaseId');
+const savedScenarioProjectFilter = document.getElementById('savedScenarioProjectFilter');
+const savedScenarioWorkFilter = document.getElementById('savedScenarioWorkFilter');
+const scenarioCompletionBanner = document.getElementById('scenarioCompletionBanner');
+const workspaceTabButtons = document.querySelectorAll('[data-workspace-tab]');
+const workspacePanelMain = document.getElementById('workspacePanelMain');
+const workspacePanelScenarios = document.getElementById('workspacePanelScenarios');
+const eventsList = document.getElementById('eventsList');
+const replayLogList = document.getElementById('replayLogList');
+const savedScenariosList = document.getElementById('savedScenariosList');
+const queueList = document.getElementById('queueList');
+const recordingsList = document.getElementById('recordingsList');
+
+const state = {
+  status: 'Idle',
+  eventCount: 0,
+  events: [],
+  replayLog: [],
+  savedScenarios: [],
+  queue: [],
+  recordings: [],
+  queueStatus: { running: false, paused: false, cursor: 0 },
+  lastRecording: null,
+  lastKey: '',
+  extendScenario: null,
+  recordVideoEnabled:
+    typeof window !== 'undefined' && window.localStorage
+      ? window.localStorage.getItem('recordVideoEnabled') === 'true'
+      : false,
+};
+
+let currentScenarioDetails = null;
+let currentScenarioRecordings = [];
+let scenarioCompletionTimeout = null;
+const workspacePanels = {
+  main: workspacePanelMain,
+  scenarios: workspacePanelScenarios,
+};
+
+const escapeHtml = (value) => {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+};
+
+const formatDuration = (ms) => {
+  if (!ms || Number.isNaN(ms)) return '0s';
+  const seconds = Math.max(0, Math.round(ms / 100) / 10);
+  return `${seconds}s`;
+};
+const formatMs = (value) => `${Math.max(0, Math.round(Number(value) || 0))}ms`;
+const formatBytes = (value) => {
+  const bytes = Number(value) || 0;
+  if (bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+};
+
+const formatEvent = (event) => {
+  const title = `${event.type}`;
+  const detail = event.selector ? `· ${event.selector}` : '';
+  const value = typeof event.value === 'string' && event.value.length
+    ? `Valor: ${event.value.slice(0, 40)}`
+    : '';
+  const time = typeof event.t === 'number' ? `${(event.t / 1000).toFixed(2)}s` : '';
+  return { title, detail, value, time };
+};
+const formatScenarioTestCaseMeta = (scenario) => {
+  const testCase = scenario?.testCase;
+  if (!testCase || !testCase.id) return '';
+  const parts = [`ID: ${testCase.id}`];
+  if (testCase.name) parts.push(`Caso: ${testCase.name}`);
+  if (testCase.status) parts.push(`Status: ${testCase.status}`);
+  if (testCase.projectName) parts.push(`Projeto: ${testCase.projectName}`);
+  if (testCase.workName) parts.push(`Work: ${testCase.workName}`);
+  return parts.join(' · ');
+};
+const formatRecordingSource = (recording) => {
+  const source = String(recording?.source || '').trim().toLowerCase();
+  if (source === 'queue') {
+    const queueIndex =
+      Number.isInteger(recording?.queueIndex) && recording.queueIndex >= 0
+        ? ` #${recording.queueIndex + 1}`
+        : '';
+    return `Fila${queueIndex}`;
+  }
+  return 'Replay';
+};
+const setScenarioDescriptionStatus = (message, tone = '') => {
+  if (!scenarioDescriptionStatus) return;
+  scenarioDescriptionStatus.textContent = message || '';
+  scenarioDescriptionStatus.className = 'hint description-status';
+  if (tone === 'success' || tone === 'error') {
+    scenarioDescriptionStatus.classList.add(tone);
+  }
+};
+const normalizeScenarioStatus = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'passed') return 'Passed';
+  if (normalized === 'failed') return 'Failed';
+  return '';
+};
+const setScenarioStatusFeedback = (message, tone = '') => {
+  if (!scenarioStatusStatus) return;
+  scenarioStatusStatus.textContent = message || '';
+  scenarioStatusStatus.className = 'hint description-status';
+  if (tone === 'success' || tone === 'error') {
+    scenarioStatusStatus.classList.add(tone);
+  }
+};
+const renderScenarioDescription = (scenario) => {
+  if (
+    !scenarioDescriptionAccordion ||
+    !scenarioDescriptionInput ||
+    !scenarioDescriptionSave ||
+    !scenarioStatusInput ||
+    !scenarioStatusSave
+  ) {
+    return;
+  }
+  const testCase = scenario?.testCase;
+  const hasTestCase = Boolean(testCase && testCase.id);
+  scenarioDescriptionAccordion.hidden = !hasTestCase;
+  if (!hasTestCase) {
+    scenarioDescriptionAccordion.open = false;
+    scenarioStatusInput.value = '';
+    scenarioStatusInput.disabled = false;
+    scenarioStatusSave.disabled = false;
+    scenarioDescriptionInput.value = '';
+    scenarioDescriptionInput.disabled = false;
+    scenarioDescriptionSave.disabled = false;
+    setScenarioStatusFeedback('');
+    setScenarioDescriptionStatus('');
+    return;
+  }
+
+  scenarioStatusInput.value = normalizeScenarioStatus(testCase.status);
+  scenarioStatusInput.disabled = false;
+  scenarioStatusSave.disabled = false;
+  scenarioDescriptionInput.value = typeof testCase.description === 'string' ? testCase.description : '';
+  scenarioDescriptionInput.disabled = false;
+  scenarioDescriptionSave.disabled = false;
+  setScenarioStatusFeedback('');
+  setScenarioDescriptionStatus('');
+};
+const scenarioProjectName = (scenario) => String(scenario?.testCase?.projectName || '').trim();
+const scenarioWorkName = (scenario) => String(scenario?.testCase?.workName || '').trim();
+const scenarioFilterOptions = (scenarios, resolver) => {
+  return [...new Set((scenarios || []).map(resolver).filter(Boolean))].sort((a, b) =>
+    a.localeCompare(b, 'pt-BR', { sensitivity: 'base' })
+  );
+};
+const fillScenarioFilter = (selectEl, options, allLabel) => {
+  if (!selectEl) return;
+  const previous = selectEl.value;
+  selectEl.innerHTML = '';
+  const baseOption = document.createElement('option');
+  baseOption.value = '';
+  baseOption.textContent = allLabel;
+  selectEl.appendChild(baseOption);
+  options.forEach((value) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = value;
+    selectEl.appendChild(option);
+  });
+  if (previous && options.includes(previous)) {
+    selectEl.value = previous;
+  } else {
+    selectEl.value = '';
+  }
+};
+const syncScenarioFilters = () => {
+  const projects = scenarioFilterOptions(state.savedScenarios, scenarioProjectName);
+  const works = scenarioFilterOptions(state.savedScenarios, scenarioWorkName);
+  fillScenarioFilter(savedScenarioProjectFilter, projects, 'Todos os projetos');
+  fillScenarioFilter(savedScenarioWorkFilter, works, 'Todos os works');
+};
+const filteredSavedScenarios = () => {
+  const selectedProject = savedScenarioProjectFilter ? savedScenarioProjectFilter.value : '';
+  const selectedWork = savedScenarioWorkFilter ? savedScenarioWorkFilter.value : '';
+  return state.savedScenarios.filter((scenario) => {
+    if (selectedProject && scenarioProjectName(scenario) !== selectedProject) return false;
+    if (selectedWork && scenarioWorkName(scenario) !== selectedWork) return false;
+    return true;
+  });
+};
+
+const formatReplayLogEntry = (entry) => {
+  if (!entry) return { title: 'Registro inválido', detail: '' };
+  const indexLabel =
+    entry.eventIndex && entry.totalEvents ? `${entry.eventIndex}/${entry.totalEvents}` : '';
+
+  if (entry.type === 'session') {
+    if (entry.stage === 'start') {
+      return {
+        title: `Replay iniciado${entry.recordingName ? `: ${entry.recordingName}` : ''}`,
+        detail: `${entry.totalEvents || 0} ações`,
+      };
+    }
+    return {
+      title: entry.recordingName
+        ? `Cenário concluído: ${entry.recordingName}`
+        : 'Replay finalizado',
+      detail: `Tempo total: ${formatMs(entry.totalMs)}`,
+    };
+  }
+
+  if (entry.type === 'pause-between-actions') {
+    const parts = [
+      `Planejado: ${formatMs(entry.targetMs)}`,
+      `Aguardado: ${formatMs(entry.waitMs)}`,
+    ];
+    if (entry.queuePauseMs) parts.push(`Pausa da fila: ${formatMs(entry.queuePauseMs)}`);
+    return {
+      title: `Pausa antes da ação ${indexLabel || ''}`.trim(),
+      detail: parts.join(' · '),
+    };
+  }
+
+  if (entry.type === 'queue-pause') {
+    return {
+      title:
+        entry.stage === 'start'
+          ? `Fila pausada${indexLabel ? ` na ação ${indexLabel}` : ''}`
+          : `Fila retomada${indexLabel ? ` na ação ${indexLabel}` : ''}`,
+      detail: entry.stage === 'end' ? `Duração da pausa: ${formatMs(entry.pausedMs)}` : 'Aguardando retomada',
+    };
+  }
+
+  if (entry.type === 'navigation') {
+    return {
+      title:
+        entry.phase === 'start'
+          ? 'Navegação inicial'
+          : `Navegação antes da ação ${indexLabel || ''}`.trim(),
+      detail: `${entry.url || 'URL não informada'} · ${formatMs(entry.durationMs)}`,
+    };
+  }
+
+  if (entry.type === 'queue-control') {
+    return {
+      title: entry.action === 'pause-requested' ? 'Solicitação de pausa da fila' : 'Solicitação de retomada da fila',
+      detail: 'Comando recebido no painel.',
+    };
+  }
+
+  if (entry.type === 'error') {
+    return {
+      title: 'Erro no replay',
+      detail: entry.message || 'Falha inesperada.',
+    };
+  }
+
+  if (entry.type === 'video') {
+    const filePath = entry.filePath || '';
+    const fileName = filePath ? filePath.split('/').pop() : '';
+    if (entry.stage === 'start') {
+      return {
+        title: 'Gravação de vídeo iniciada',
+        detail: fileName || filePath || 'Arquivo em preparação',
+      };
+    }
+    if (entry.stage === 'saved') {
+      return {
+        title: 'Vídeo salvo',
+        detail: filePath || fileName || 'Arquivo salvo com sucesso',
+      };
+    }
+    return {
+      title: 'Erro na gravação de vídeo',
+      detail: entry.message || 'Falha ao gravar o replay.',
+    };
+  }
+
+  if (entry.type === 'action') {
+    const details = [
+      `Espera: ${formatMs(entry.waitMs)}`,
+      `Execução: ${formatMs(entry.executionMs)}`,
+      `Total: ${formatMs(entry.totalActionMs)}`,
+    ];
+    if (entry.navigationMs) details.push(`Navegação: ${formatMs(entry.navigationMs)}`);
+    if (entry.queuePauseMs) details.push(`Pausa fila: ${formatMs(entry.queuePauseMs)}`);
+    return {
+      title: `Ação ${indexLabel || ''} · ${entry.eventType || 'evento'}`.trim(),
+      detail: details.join(' · '),
+    };
+  }
+
+  return {
+    title: entry.type || 'Registro',
+    detail: '',
+  };
+};
+const setWorkspaceTab = (tabName) => {
+  const activeTab = tabName === 'scenarios' ? 'scenarios' : 'main';
+  Object.entries(workspacePanels).forEach(([name, panel]) => {
+    if (!panel) return;
+    const active = name === activeTab;
+    panel.classList.toggle('active', active);
+    panel.hidden = !active;
+  });
+
+  workspaceTabButtons.forEach((button) => {
+    const active = button.dataset.workspaceTab === activeTab;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+    button.tabIndex = active ? 0 : -1;
+  });
+};
+const hideScenarioCompletionBanner = () => {
+  if (!scenarioCompletionBanner) return;
+  scenarioCompletionBanner.classList.add('hidden');
+  scenarioCompletionBanner.textContent = '';
+  if (scenarioCompletionTimeout) {
+    clearTimeout(scenarioCompletionTimeout);
+    scenarioCompletionTimeout = null;
+  }
+};
+const showScenarioCompletionBanner = (scenarioName) => {
+  if (!scenarioCompletionBanner) return;
+  const safeName = String(scenarioName || '').trim() || 'Cenário';
+  scenarioCompletionBanner.textContent = `Cenário "${safeName}" concluído.`;
+  scenarioCompletionBanner.classList.remove('hidden');
+  if (scenarioCompletionTimeout) {
+    clearTimeout(scenarioCompletionTimeout);
+  }
+  scenarioCompletionTimeout = setTimeout(() => {
+    hideScenarioCompletionBanner();
+  }, 8000);
+};
+
+const updateRecordVideoToggle = () => {
+  if (!recordVideoToggle) return;
+  const enabled = Boolean(state.recordVideoEnabled);
+  recordVideoToggle.textContent = `Gravar vídeo: ${enabled ? 'ON' : 'OFF'}`;
+  recordVideoToggle.classList.toggle('active', enabled);
+};
+
+const updateStatus = () => {
+  statusPill.textContent = state.status;
+  statusPill.classList.remove('recording', 'paused', 'replaying');
+
+  if (state.status === 'Recording') statusPill.classList.add('recording');
+  if (state.status === 'Paused') statusPill.classList.add('paused');
+  if (state.status === 'Replaying') statusPill.classList.add('replaying');
+
+  eventCount.textContent = state.eventCount ?? 0;
+  actionsHint.textContent = state.status === 'Recording' ? 'Live' : 'Histórico';
+
+  const last = state.lastRecording;
+  if (!last) {
+    lastInfo.querySelector('.value').textContent = '—';
+  } else {
+    lastInfo.querySelector('.value').textContent = `${last.eventCount} eventos · ${formatDuration(last.duration)}`;
+  }
+
+  if (lastKeyEl) {
+    lastKeyEl.textContent = state.lastKey || '—';
+  }
+};
+
+const formatKey = (event) => {
+  if (!event) return '';
+  const parts = [];
+  if (event.ctrlKey) parts.push('Ctrl');
+  if (event.altKey) parts.push('Alt');
+  if (event.shiftKey) parts.push('Shift');
+  if (event.metaKey) parts.push('Meta');
+  const key = event.key || event.code || '';
+  if (key) parts.push(key);
+  return parts.join('+') || '';
+};
+
+const updateButtons = () => {
+  const isRecording = state.status === 'Recording';
+  const isPaused = state.status === 'Paused';
+  const isReplaying = state.status === 'Replaying';
+
+  startBtn.disabled = isRecording || isPaused || isReplaying;
+  pauseBtn.disabled = !isRecording;
+  resumeBtn.disabled = !isPaused;
+  stopBtn.disabled = !(isRecording || isPaused);
+
+  exportBtn.disabled = !state.lastRecording;
+  replayLastBtn.disabled = !state.lastRecording || isRecording || isPaused || isReplaying;
+  saveScenarioBtn.disabled = !state.lastRecording;
+  if (exportScenariosBtn) exportScenariosBtn.disabled = state.savedScenarios.length === 0;
+
+  const queueRunning = state.queueStatus?.running;
+  const queuePaused = state.queueStatus?.paused;
+  if (queueRunBtn) queueRunBtn.disabled = queueRunning || state.queue.length === 0 || isRecording || isPaused;
+  if (queuePauseBtn) queuePauseBtn.disabled = !queueRunning;
+  if (queueResumeBtn) {
+    queueResumeBtn.disabled = !queuePaused || queueRunning || state.queue.length === 0 || isRecording || isPaused;
+  }
+};
+
+const formatSelectorLabel = (event) => {
+  return event.selector || (Array.isArray(event.selectors) && event.selectors.length ? event.selectors[0] : '') || '';
+};
+
+const hasCustomValue = (event) => Object.prototype.hasOwnProperty.call(event, 'customValue');
+
+const renderScenarioInputs = (scenario) => {
+  if (!scenarioInputsList) return;
+  scenarioInputsList.innerHTML = '';
+  const inputEvents = scenario.events
+    .map((event, index) => ({ event, index }))
+    .filter(
+      ({ event }) =>
+        (event.type === 'input' || event.type === 'change') &&
+        typeof event.value === 'string'
+    );
+
+  if (!inputEvents.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item';
+    empty.textContent = 'Nenhum input com valor encontrado neste cenário.';
+    scenarioInputsList.appendChild(empty);
+    return;
+  }
+
+  inputEvents.forEach(({ event, index }) => {
+    const item = document.createElement('div');
+    item.className = 'list-item input-detail';
+    item.dataset.index = String(index);
+    const label = formatSelectorLabel(event);
+    const original = event.value ?? '';
+    const custom = hasCustomValue(event) ? event.customValue ?? '' : '';
+    const useOriginal = !hasCustomValue(event);
+
+    item.innerHTML = `
+      <div class="title">Campo ${index + 1}</div>
+      <div class="field-row">
+        <div class="meta">Selector: <span class="mono">${escapeHtml(label || '—')}</span></div>
+        <div class="meta">Original: ${escapeHtml(String(original).slice(0, 120))}</div>
+      </div>
+      <label class="checkbox-row">
+        <input type="checkbox" data-role="use-original" ${useOriginal ? 'checked' : ''} />
+        Usar valor original
+      </label>
+      <input type="text" data-role="custom-value" value="${escapeHtml(custom)}" ${
+        useOriginal ? 'disabled' : ''
+      } />
+    `;
+
+    const inputEl = item.querySelector('[data-role="custom-value"]');
+    if (inputEl && useOriginal) {
+      inputEl.value = original;
+    }
+
+    scenarioInputsList.appendChild(item);
+  });
+};
+
+const openScenarioDetails = async (id) => {
+  if (!scenarioModal) return;
+  const response = await apiRequest(`/api/scenarios/${id}`);
+  const scenario = await response.json();
+  currentScenarioDetails = scenario;
+  if (scenarioModalTitle) {
+    scenarioModalTitle.textContent = `Detalhes do cenário: ${scenario.name}`;
+  }
+  renderScenarioDescription(scenario);
+  renderScenarioInputs(scenario);
+  if (scenarioRecordingsAccordion) {
+    scenarioRecordingsAccordion.open = true;
+  }
+  void loadScenarioRecordings(scenario.id);
+  scenarioModal.classList.remove('hidden');
+  scenarioModal.setAttribute('aria-hidden', 'false');
+};
+
+const closeScenarioDetails = () => {
+  if (!scenarioModal) return;
+  scenarioModal.classList.add('hidden');
+  scenarioModal.setAttribute('aria-hidden', 'true');
+  currentScenarioDetails = null;
+  currentScenarioRecordings = [];
+  renderScenarioDescription(null);
+  if (scenarioRecordingsAccordion) {
+    scenarioRecordingsAccordion.hidden = true;
+    scenarioRecordingsAccordion.open = false;
+  }
+  renderScenarioRecordings({ recordings: [] });
+  if (scenarioInputsList) scenarioInputsList.innerHTML = '';
+};
+
+const renderEvents = () => {
+  eventsList.innerHTML = '';
+  if (!state.events.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item';
+    empty.textContent = 'Nenhuma ação capturada ainda.';
+    eventsList.appendChild(empty);
+    return;
+  }
+
+  [...state.events].reverse().forEach((event) => {
+    const item = document.createElement('div');
+    item.className = 'list-item';
+    const { title, detail, value, time } = formatEvent(event);
+    item.innerHTML = `
+      <div class="title">${title} <span class="meta">${detail}</span></div>
+      <div class="meta">${[value, time].filter(Boolean).join(' · ')}</div>
+    `;
+    eventsList.appendChild(item);
+  });
+};
+
+const renderReplayLog = () => {
+  if (!replayLogList) return;
+  replayLogList.innerHTML = '';
+  if (!state.replayLog || !state.replayLog.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item';
+    empty.textContent = 'Sem logs de replay no momento.';
+    replayLogList.appendChild(empty);
+    return;
+  }
+
+  [...state.replayLog].reverse().forEach((entry) => {
+    const item = document.createElement('div');
+    item.className = 'list-item';
+    const { title, detail } = formatReplayLogEntry(entry);
+    const timestamp = entry.at ? new Date(entry.at).toLocaleTimeString() : '';
+    item.innerHTML = `
+      <div class="title">${escapeHtml(title || 'Evento')}</div>
+      <div class="meta">${escapeHtml([timestamp, detail].filter(Boolean).join(' · '))}</div>
+    `;
+    replayLogList.appendChild(item);
+  });
+};
+
+const renderSavedScenarios = () => {
+  syncScenarioFilters();
+  savedScenariosList.innerHTML = '';
+  if (!state.savedScenarios.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item';
+    empty.textContent = 'Nenhum cenário salvo ainda.';
+    savedScenariosList.appendChild(empty);
+    return;
+  }
+
+  const scenarios = filteredSavedScenarios();
+  if (!scenarios.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item';
+    empty.textContent = 'Nenhum cenário encontrado para o filtro selecionado.';
+    savedScenariosList.appendChild(empty);
+    return;
+  }
+
+  scenarios.forEach((scenario) => {
+    const isExtendActive = state.extendScenario && state.extendScenario.id === scenario.id;
+    const extendLabel = isExtendActive ? 'Cancelar extensão' : 'Estender';
+    const extendDisabled = state.status === 'Recording' || state.status === 'Paused' || state.status === 'Replaying';
+    const testCaseMeta = formatScenarioTestCaseMeta(scenario);
+    const item = document.createElement('div');
+    item.className = 'list-item';
+    item.innerHTML = `
+      <div class="title">${escapeHtml(scenario.name)}</div>
+      <div class="meta">${scenario.eventCount} eventos · ${formatDuration(scenario.duration)}</div>
+      ${testCaseMeta ? `<div class="meta">${escapeHtml(testCaseMeta)}</div>` : ''}
+      <div class="scenario-actions">
+        <button data-action="run" data-id="${scenario.id}">Executar</button>
+        <button data-action="queue" data-id="${scenario.id}">Enviar à fila</button>
+        <button data-action="export" data-id="${scenario.id}">Exportar</button>
+        <button data-action="duplicate" data-id="${scenario.id}">Duplicar</button>
+        <button data-action="extend" data-id="${scenario.id}" ${extendDisabled ? 'disabled' : ''}>
+          ${extendLabel}
+        </button>
+        <button data-action="details" data-id="${scenario.id}">Detalhes</button>
+        <button data-action="rename" data-id="${scenario.id}">Renomear</button>
+        <button data-action="delete" data-id="${scenario.id}">Remover</button>
+      </div>
+    `;
+    savedScenariosList.appendChild(item);
+  });
+};
+
+const renderQueue = () => {
+  queueList.innerHTML = '';
+  if (!state.queue.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item';
+    empty.textContent = 'Fila vazia. Envie cenários para executar em sequência.';
+    queueList.appendChild(empty);
+    return;
+  }
+
+  state.queue.forEach((item, index) => {
+    const row = document.createElement('div');
+    row.className = 'list-item';
+    row.innerHTML = `
+      <div class="title">${index + 1}. ${item.name}</div>
+      <div class="meta">${item.eventCount} eventos · ${formatDuration(item.duration)}</div>
+      <div class="scenario-actions">
+        <button data-action="up" data-id="${item.id}">Subir</button>
+        <button data-action="down" data-id="${item.id}">Descer</button>
+        <button data-action="remove" data-id="${item.id}">Remover</button>
+      </div>
+    `;
+    queueList.appendChild(row);
+  });
+};
+
+const renderRecordings = () => {
+  if (!recordingsList) return;
+  recordingsList.innerHTML = '';
+  if (!state.recordings.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item';
+    empty.textContent = 'Nenhuma captura de vídeo encontrada.';
+    recordingsList.appendChild(empty);
+    return;
+  }
+
+  state.recordings.forEach((recording) => {
+    const row = document.createElement('div');
+    row.className = 'list-item';
+    const updatedAt = recording.updatedAt
+      ? new Date(recording.updatedAt).toLocaleString()
+      : '';
+    const executionMeta = [
+      recording.scenarioName ? `Cenário: ${recording.scenarioName}` : 'Sem cenário vinculado',
+      formatRecordingSource(recording),
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    row.innerHTML = `
+      <div class="title">${escapeHtml(recording.name || 'captura.webm')}</div>
+      <div class="meta">${escapeHtml(
+        [formatBytes(recording.size), updatedAt].filter(Boolean).join(' · ')
+      )}</div>
+      <div class="meta">${escapeHtml(executionMeta)}</div>
+      <div class="scenario-actions">
+        <button data-action="download" data-name="${escapeHtml(recording.name || '')}">Baixar</button>
+        <button data-action="delete" data-name="${escapeHtml(recording.name || '')}">Remover</button>
+      </div>
+    `;
+    recordingsList.appendChild(row);
+  });
+};
+
+const renderScenarioRecordings = (options = {}) => {
+  if (!scenarioRecordingsList) return;
+  const loading = Boolean(options.loading);
+  const recordings = Array.isArray(options.recordings)
+    ? options.recordings
+    : currentScenarioRecordings;
+
+  scenarioRecordingsList.innerHTML = '';
+  if (loading) {
+    const loadingRow = document.createElement('div');
+    loadingRow.className = 'list-item';
+    loadingRow.textContent = 'Carregando execuções...';
+    scenarioRecordingsList.appendChild(loadingRow);
+    return;
+  }
+
+  if (!recordings.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item';
+    empty.textContent = 'Nenhuma execução em vídeo encontrada para este cenário.';
+    scenarioRecordingsList.appendChild(empty);
+    return;
+  }
+
+  recordings.forEach((recording) => {
+    const row = document.createElement('div');
+    row.className = 'list-item';
+    const savedAt = recording.savedAt || recording.updatedAt || recording.createdAt;
+    const dateLabel = savedAt ? new Date(savedAt).toLocaleString() : '';
+    const executionMeta = [formatRecordingSource(recording), dateLabel].filter(Boolean).join(' · ');
+    row.innerHTML = `
+      <div class="title">${escapeHtml(recording.name || 'captura.webm')}</div>
+      <div class="meta">${escapeHtml(
+        [formatBytes(recording.size), executionMeta].filter(Boolean).join(' · ')
+      )}</div>
+      <div class="scenario-actions">
+        <button data-action="download" data-name="${escapeHtml(recording.name || '')}">Baixar</button>
+        <button data-action="delete" data-name="${escapeHtml(recording.name || '')}">Remover</button>
+      </div>
+    `;
+    scenarioRecordingsList.appendChild(row);
+  });
+};
+
+const loadScenarioRecordings = async (scenarioId) => {
+  if (!scenarioRecordingsAccordion || !scenarioRecordingsList) return;
+  if (!scenarioId) {
+    scenarioRecordingsAccordion.hidden = true;
+    currentScenarioRecordings = [];
+    renderScenarioRecordings({ recordings: [] });
+    return;
+  }
+
+  scenarioRecordingsAccordion.hidden = false;
+  renderScenarioRecordings({ loading: true });
+  try {
+    const response = await apiRequest(`/api/scenarios/${scenarioId}/recordings`);
+    const payload = await response.json().catch(() => ({}));
+    currentScenarioRecordings = Array.isArray(payload.recordings) ? payload.recordings : [];
+    renderScenarioRecordings();
+  } catch (error) {
+    currentScenarioRecordings = [];
+    renderScenarioRecordings({ recordings: [] });
+    const errorRow = document.createElement('div');
+    errorRow.className = 'list-item';
+    errorRow.textContent = error.message || 'Falha ao carregar execuções.';
+    scenarioRecordingsList.innerHTML = '';
+    scenarioRecordingsList.appendChild(errorRow);
+  }
+};
+
+const render = () => {
+  updateStatus();
+  updateButtons();
+  updateRecordVideoToggle();
+  renderEvents();
+  renderReplayLog();
+  renderSavedScenarios();
+  renderQueue();
+  renderRecordings();
+};
+
+const apiRequest = async (url, options = {}) => {
+  const response = await fetch(url, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || 'Erro na operação');
+  }
+  return response;
+};
+
+const downloadRecording = async () => {
+  const response = await apiRequest('/api/export/last');
+  const blob = await response.blob();
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  const fileName = match ? match[1] : 'recording.json';
+
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+};
+
+const downloadScenarios = async () => {
+  const response = await apiRequest('/api/scenarios/export');
+  const blob = await response.blob();
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  const fileName = match ? match[1] : 'scenarios.json';
+
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+};
+
+const downloadVideoCapture = async (name) => {
+  const response = await apiRequest(`/api/recordings/${encodeURIComponent(name)}/download`);
+  const blob = await response.blob();
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  const fileName = match ? match[1] : name || 'capture.webm';
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+};
+
+const importScenarios = async (file) => {
+  if (!file) return;
+  const text = await file.text();
+  const payload = JSON.parse(text);
+  await apiRequest('/api/scenarios/import', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+};
+
+const loadRecordings = async () => {
+  const response = await apiRequest('/api/recordings');
+  const payload = await response.json().catch(() => ({}));
+  state.recordings = Array.isArray(payload.recordings) ? payload.recordings : [];
+  renderRecordings();
+};
+
+const normalizeUrl = (value) => {
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value)) return value;
+  return `https://${value}`;
+};
+
+const getReplayUrlOverride = () => {
+  const value = replayUrlInput ? replayUrlInput.value.trim() : '';
+  return value ? normalizeUrl(value) : '';
+};
+const shouldRecordVideo = () => Boolean(state.recordVideoEnabled);
+
+startBtn.addEventListener('click', async () => {
+  await apiRequest('/api/recording/start', { method: 'POST' });
+});
+
+pauseBtn.addEventListener('click', async () => {
+  await apiRequest('/api/recording/pause', { method: 'POST' });
+});
+
+resumeBtn.addEventListener('click', async () => {
+  await apiRequest('/api/recording/resume', { method: 'POST' });
+});
+
+stopBtn.addEventListener('click', async () => {
+  await apiRequest('/api/recording/stop', { method: 'POST' });
+});
+
+exportBtn.addEventListener('click', async () => {
+  await downloadRecording();
+});
+
+if (exportScenariosBtn) {
+  exportScenariosBtn.addEventListener('click', async () => {
+    await downloadScenarios();
+  });
+}
+
+if (importScenariosBtn && importScenariosInput) {
+  importScenariosBtn.addEventListener('click', () => {
+    importScenariosInput.click();
+  });
+
+  importScenariosInput.addEventListener('change', async () => {
+    const file = importScenariosInput.files ? importScenariosInput.files[0] : null;
+    if (!file) return;
+    try {
+      await importScenarios(file);
+    } finally {
+      importScenariosInput.value = '';
+    }
+  });
+}
+
+closeBtn.addEventListener('click', async () => {
+  await apiRequest('/api/session/close', { method: 'POST' });
+});
+
+replayLastBtn.addEventListener('click', async () => {
+  const overrideUrl = getReplayUrlOverride();
+  await apiRequest('/api/replay/last', {
+    method: 'POST',
+    body: JSON.stringify({ overrideUrl, recordVideo: shouldRecordVideo() }),
+  });
+});
+
+if (recordVideoToggle) {
+  recordVideoToggle.addEventListener('click', () => {
+    state.recordVideoEnabled = !state.recordVideoEnabled;
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem('recordVideoEnabled', String(state.recordVideoEnabled));
+    }
+    updateRecordVideoToggle();
+  });
+}
+
+if (queueRunBtn) {
+  queueRunBtn.addEventListener('click', async () => {
+    const overrideUrl = getReplayUrlOverride();
+    await apiRequest('/api/queue/run', {
+      method: 'POST',
+      body: JSON.stringify({ overrideUrl, recordVideo: shouldRecordVideo() }),
+    });
+  });
+}
+
+if (queuePauseBtn) {
+  queuePauseBtn.addEventListener('click', async () => {
+    await apiRequest('/api/queue/pause', { method: 'POST' });
+  });
+}
+
+if (queueResumeBtn) {
+  queueResumeBtn.addEventListener('click', async () => {
+    const overrideUrl = getReplayUrlOverride();
+    await apiRequest('/api/queue/resume', {
+      method: 'POST',
+      body: JSON.stringify({ overrideUrl, recordVideo: shouldRecordVideo() }),
+    });
+  });
+}
+
+if (refreshRecordingsBtn) {
+  refreshRecordingsBtn.addEventListener('click', async () => {
+    await loadRecordings();
+  });
+}
+
+saveScenarioBtn.addEventListener('click', async () => {
+  const name = scenarioNameInput.value.trim();
+  const testCaseId = scenarioTestCaseIdInput ? scenarioTestCaseIdInput.value.trim() : '';
+  await apiRequest('/api/scenarios/save', {
+    method: 'POST',
+    body: JSON.stringify({ name, testCaseId }),
+  });
+  scenarioNameInput.value = '';
+  if (scenarioTestCaseIdInput) scenarioTestCaseIdInput.value = '';
+});
+
+openUrlBtn.addEventListener('click', async () => {
+  const url = normalizeUrl(urlInput.value.trim());
+  if (!url) return;
+  await apiRequest('/api/navigate', {
+    method: 'POST',
+    body: JSON.stringify({ url }),
+  });
+});
+
+savedScenariosList.addEventListener('click', async (event) => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  const id = button.dataset.id;
+  const action = button.dataset.action;
+  if (!id || !action) return;
+
+  if (action === 'run') {
+    const overrideUrl = getReplayUrlOverride();
+    await apiRequest(`/api/scenarios/${id}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ overrideUrl, recordVideo: shouldRecordVideo() }),
+    });
+  }
+
+  if (action === 'queue') {
+    await apiRequest('/api/queue/add', {
+      method: 'POST',
+      body: JSON.stringify({ scenarioId: id }),
+    });
+  }
+
+  if (action === 'export') {
+    const response = await apiRequest(`/api/scenarios/${id}/export`);
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    const fileName = match ? match[1] : 'scenario.json';
+
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  if (action === 'duplicate') {
+    await apiRequest(`/api/scenarios/${id}/duplicate`, { method: 'POST' });
+  }
+
+  if (action === 'extend') {
+    const response = await apiRequest(`/api/scenarios/${id}/extend`, { method: 'POST' });
+    const result = await response.json().catch(() => null);
+    if (result && result.active) {
+      try {
+        await apiRequest('/api/recording/start', { method: 'POST' });
+      } catch (error) {
+        await apiRequest(`/api/scenarios/${id}/extend`, { method: 'POST' });
+        throw error;
+      }
+    }
+  }
+
+  if (action === 'details') {
+    await openScenarioDetails(id);
+  }
+
+  if (action === 'rename') {
+    const current = state.savedScenarios.find((item) => item.id === id);
+    const name = window.prompt('Novo nome do cenário:', current ? current.name : '');
+    if (!name) return;
+    await apiRequest(`/api/scenarios/${id}/rename`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  if (action === 'delete') {
+    await apiRequest(`/api/scenarios/${id}`, { method: 'DELETE' });
+  }
+});
+
+queueList.addEventListener('click', async (event) => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  const id = button.dataset.id;
+  const action = button.dataset.action;
+  if (!id || !action) return;
+
+  if (action === 'up' || action === 'down') {
+    await apiRequest(`/api/queue/${id}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ direction: action }),
+    });
+  }
+
+  if (action === 'remove') {
+    await apiRequest(`/api/queue/${id}`, { method: 'DELETE' });
+  }
+});
+
+if (savedScenarioProjectFilter) {
+  savedScenarioProjectFilter.addEventListener('change', () => {
+    renderSavedScenarios();
+  });
+}
+
+if (savedScenarioWorkFilter) {
+  savedScenarioWorkFilter.addEventListener('change', () => {
+    renderSavedScenarios();
+  });
+}
+
+if (workspaceTabButtons.length) {
+  workspaceTabButtons.forEach((button) => {
+    button.addEventListener('click', () => {
+      setWorkspaceTab(button.dataset.workspaceTab || 'main');
+    });
+  });
+}
+
+if (recordingsList) {
+  recordingsList.addEventListener('click', async (event) => {
+    const button = event.target.closest('button');
+    if (!button) return;
+    const action = button.dataset.action;
+    const name = button.dataset.name;
+    if (!action || !name) return;
+
+    if (action === 'download') {
+      await downloadVideoCapture(name);
+      return;
+    }
+
+    if (action === 'delete') {
+      const confirmed = window.confirm(`Remover a captura "${name}"?`);
+      if (!confirmed) return;
+      await apiRequest(`/api/recordings/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      await loadRecordings();
+    }
+  });
+}
+
+if (scenarioRecordingsRefresh) {
+  scenarioRecordingsRefresh.addEventListener('click', async () => {
+    if (!currentScenarioDetails?.id) return;
+    await loadScenarioRecordings(currentScenarioDetails.id);
+  });
+}
+
+if (scenarioRecordingsList) {
+  scenarioRecordingsList.addEventListener('click', async (event) => {
+    const button = event.target.closest('button');
+    if (!button) return;
+    const action = button.dataset.action;
+    const name = button.dataset.name;
+    if (!action || !name) return;
+
+    if (action === 'download') {
+      await downloadVideoCapture(name);
+      return;
+    }
+
+    if (action === 'delete') {
+      const confirmed = window.confirm(`Remover a captura "${name}"?`);
+      if (!confirmed) return;
+      await apiRequest(`/api/recordings/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      await loadRecordings();
+      if (currentScenarioDetails?.id) {
+        await loadScenarioRecordings(currentScenarioDetails.id);
+      }
+    }
+  });
+}
+
+if (scenarioInputsList) {
+  scenarioInputsList.addEventListener('change', (event) => {
+    const checkbox = event.target.closest('[data-role="use-original"]');
+    if (!checkbox) return;
+    const row = checkbox.closest('.input-detail');
+    if (!row) return;
+    const input = row.querySelector('[data-role="custom-value"]');
+    if (!input) return;
+    input.disabled = checkbox.checked;
+    if (checkbox.checked) {
+      const index = Number(row.dataset.index);
+      const source = currentScenarioDetails?.events?.[index];
+      if (source && typeof source.value === 'string') {
+        input.value = source.value;
+      }
+    }
+  });
+}
+
+if (scenarioInputsSave) {
+  scenarioInputsSave.addEventListener('click', async () => {
+    if (!currentScenarioDetails) return;
+    const rows = scenarioInputsList ? scenarioInputsList.querySelectorAll('.input-detail') : [];
+    const updates = [];
+    rows.forEach((row) => {
+      const index = Number(row.dataset.index);
+      if (!Number.isInteger(index)) return;
+      const useOriginal = row.querySelector('[data-role="use-original"]')?.checked;
+      const input = row.querySelector('[data-role="custom-value"]');
+      const customValue = input ? input.value : '';
+      updates.push({
+        index,
+        customValue: useOriginal ? null : customValue,
+      });
+    });
+
+    await apiRequest(`/api/scenarios/${currentScenarioDetails.id}/inputs`, {
+      method: 'POST',
+      body: JSON.stringify({ updates }),
+    });
+    closeScenarioDetails();
+  });
+}
+
+if (scenarioDescriptionSave) {
+  scenarioDescriptionSave.addEventListener('click', async () => {
+    if (!currentScenarioDetails?.id || !currentScenarioDetails?.testCase?.id) return;
+    const description = scenarioDescriptionInput ? scenarioDescriptionInput.value : '';
+    setScenarioDescriptionStatus('Atualizando descrição no Salesforce...');
+    scenarioDescriptionSave.disabled = true;
+    if (scenarioDescriptionInput) scenarioDescriptionInput.disabled = true;
+
+    try {
+      const response = await apiRequest(
+        `/api/scenarios/${currentScenarioDetails.id}/test-case/description`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ description }),
+        }
+      );
+      const payload = await response.json().catch(() => ({}));
+      const returnedTestCase = payload?.testCase && typeof payload.testCase === 'object' ? payload.testCase : {};
+      const hasDescription = Object.prototype.hasOwnProperty.call(returnedTestCase, 'description');
+      const descriptionValue = hasDescription
+        ? returnedTestCase.description ?? ''
+        : description;
+
+      currentScenarioDetails = {
+        ...currentScenarioDetails,
+        testCase: {
+          ...(currentScenarioDetails.testCase || {}),
+          ...returnedTestCase,
+          description: descriptionValue || null,
+        },
+      };
+
+      if (scenarioDescriptionInput) scenarioDescriptionInput.value = descriptionValue;
+      setScenarioDescriptionStatus('Descrição atualizada com sucesso.', 'success');
+    } catch (error) {
+      setScenarioDescriptionStatus(error.message || 'Falha ao atualizar descrição.', 'error');
+    } finally {
+      scenarioDescriptionSave.disabled = false;
+      if (scenarioDescriptionInput) scenarioDescriptionInput.disabled = false;
+    }
+  });
+}
+
+if (scenarioStatusSave) {
+  scenarioStatusSave.addEventListener('click', async () => {
+    if (!currentScenarioDetails?.id || !currentScenarioDetails?.testCase?.id) return;
+    const statusValue = normalizeScenarioStatus(scenarioStatusInput ? scenarioStatusInput.value : '');
+    if (!statusValue) {
+      setScenarioStatusFeedback('Selecione Passed ou Failed.', 'error');
+      return;
+    }
+
+    setScenarioStatusFeedback('Atualizando status no Salesforce...');
+    scenarioStatusSave.disabled = true;
+    if (scenarioStatusInput) scenarioStatusInput.disabled = true;
+
+    try {
+      const response = await apiRequest(
+        `/api/scenarios/${currentScenarioDetails.id}/test-case/status`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ status: statusValue }),
+        }
+      );
+      const payload = await response.json().catch(() => ({}));
+      const returnedTestCase = payload?.testCase && typeof payload.testCase === 'object' ? payload.testCase : {};
+      const hasStatus = Object.prototype.hasOwnProperty.call(returnedTestCase, 'status');
+      const normalizedStatus = normalizeScenarioStatus(
+        hasStatus ? returnedTestCase.status : statusValue
+      );
+
+      currentScenarioDetails = {
+        ...currentScenarioDetails,
+        testCase: {
+          ...(currentScenarioDetails.testCase || {}),
+          ...returnedTestCase,
+          status: normalizedStatus || null,
+        },
+      };
+
+      if (scenarioStatusInput) scenarioStatusInput.value = normalizedStatus;
+      setScenarioStatusFeedback('Status atualizado com sucesso.', 'success');
+    } catch (error) {
+      setScenarioStatusFeedback(error.message || 'Falha ao atualizar status.', 'error');
+    } finally {
+      scenarioStatusSave.disabled = false;
+      if (scenarioStatusInput) scenarioStatusInput.disabled = false;
+    }
+  });
+}
+
+if (scenarioModalClose) {
+  scenarioModalClose.addEventListener('click', () => closeScenarioDetails());
+}
+
+if (scenarioModal) {
+  scenarioModal.addEventListener('click', (event) => {
+    const closeTarget = event.target.closest('[data-action="close"]');
+    if (closeTarget) closeScenarioDetails();
+  });
+}
+
+const ws = new WebSocket(`ws://${window.location.host}`);
+ws.addEventListener('message', (event) => {
+  const message = JSON.parse(event.data);
+  if (message.type === 'state') {
+    Object.assign(state, message.state);
+    render();
+    return;
+  }
+
+  if (message.type === 'replay-log') {
+    state.replayLog = [...(state.replayLog || []), message.entry].slice(-300);
+    if (message.entry?.type === 'session' && message.entry?.stage === 'start') {
+      hideScenarioCompletionBanner();
+    }
+    if (message.entry?.type === 'session' && message.entry?.stage === 'end') {
+      showScenarioCompletionBanner(message.entry.recordingName);
+    }
+    renderReplayLog();
+    if (message.entry && message.entry.type === 'video' && message.entry.stage === 'saved') {
+      void loadRecordings();
+    }
+    return;
+  }
+
+  if (message.type === 'event') {
+    state.events = [...(state.events || []), message.event].slice(-200);
+    state.eventCount = message.count;
+    if (message.event && message.event.type === 'key') {
+      state.lastKey = formatKey(message.event);
+      if (lastKeyEl) {
+        lastKeyEl.classList.remove('flash');
+        void lastKeyEl.offsetWidth;
+        lastKeyEl.classList.add('flash');
+      }
+    }
+    renderEvents();
+    updateStatus();
+    updateButtons();
+  }
+});
+
+void loadRecordings();
+setWorkspaceTab('main');

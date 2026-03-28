@@ -1,0 +1,34 @@
+{
+  "recordings": [
+    {
+      "name": "rec_thv8rw_mnaksymf-single-2026-03-28T17-03-33-160Z.webm",
+      "source": "single",
+      "scenarioId": null,
+      "scenarioName": null,
+      "recordingId": "rec_thv8rw_mnaksymf",
+      "savedAt": "2026-03-28T17:03:46.341Z",
+      "startUrl": "https://gruponortis--uatonda2.sandbox.lightning.force.com/lightning/r/Quote/0Q0HZ000003bV370AE/view?c__empreendimentoId=a0WHZ000002pNJB2A2",
+      "queueIndex": 0
+    },
+    {
+      "name": "rec_thv8rw_mnaksymf-single-2026-03-28T17-03-18-001Z.webm",
+      "source": "single",
+      "scenarioId": null,
+      "scenarioName": null,
+      "recordingId": "rec_thv8rw_mnaksymf",
+      "savedAt": "2026-03-28T17:03:34.106Z",
+      "startUrl": "https://gruponortis--uatonda2.sandbox.lightning.force.com/lightning/r/Quote/0Q0HZ000003bV370AE/view?c__empreendimentoId=a0WHZ000002pNJB2A2",
+      "queueIndex": 0
+    },
+    {
+      "name": "rec_thv8rw_mnaksymf-single-2026-03-28T17-00-25-347Z.webm",
+      "source": "single",
+      "scenarioId": null,
+      "scenarioName": null,
+      "recordingId": "rec_thv8rw_mnaksymf",
+      "savedAt": "2026-03-28T17:00:38.786Z",
+      "startUrl": "https://gruponortis--uatonda2.sandbox.lightning.force.com/lightning/r/Quote/0Q0HZ000003bV370AE/view?c__empreendimentoId=a0WHZ000002pNJB2A2",
+      "queueIndex": 0
+    }
+  ]
+}
