@@ -40,6 +40,7 @@ const scenarioRecordingsList = document.getElementById('scenarioRecordingsList')
 const urlInput = document.getElementById('urlInput');
 const scenarioNameInput = document.getElementById('scenarioName');
 const scenarioTestCaseIdInput = document.getElementById('scenarioTestCaseId');
+const savedScenarioClientFilter = document.getElementById('savedScenarioClientFilter');
 const savedScenarioProjectFilter = document.getElementById('savedScenarioProjectFilter');
 const savedScenarioWorkFilter = document.getElementById('savedScenarioWorkFilter');
 const scenarioCompletionBanner = document.getElementById('scenarioCompletionBanner');
@@ -50,6 +51,7 @@ const eventsList = document.getElementById('eventsList');
 const replayLogList = document.getElementById('replayLogList');
 const savedScenariosList = document.getElementById('savedScenariosList');
 const queueList = document.getElementById('queueList');
+const themeToggle = document.getElementById('themeToggle');
 
 const state = {
   status: 'Idle',
@@ -74,6 +76,47 @@ let scenarioCompletionTimeout = null;
 const workspacePanels = {
   main: workspacePanelMain,
   scenarios: workspacePanelScenarios,
+};
+const THEME_STORAGE_KEY = 'uiThemePreference';
+
+const normalizeTheme = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'light' || normalized === 'dark') return normalized;
+  return null;
+};
+const preferredThemeFromSystem = () => {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return 'dark';
+  }
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+};
+const currentTheme = () =>
+  normalizeTheme(document.documentElement.getAttribute('data-theme')) || 'dark';
+const applyTheme = (theme) => {
+  const resolvedTheme = normalizeTheme(theme) || 'dark';
+  document.documentElement.setAttribute('data-theme', resolvedTheme);
+  if (!themeToggle) return;
+  const isDark = resolvedTheme === 'dark';
+  const targetTheme = isDark ? 'claro' : 'escuro';
+  themeToggle.textContent = isDark ? 'Tema: Escuro' : 'Tema: Claro';
+  themeToggle.setAttribute(
+    'aria-label',
+    `Tema atual ${isDark ? 'escuro' : 'claro'}. Clique para ativar o tema ${targetTheme}.`
+  );
+};
+const initializeTheme = () => {
+  let savedTheme = null;
+  if (typeof window !== 'undefined' && window.localStorage) {
+    savedTheme = normalizeTheme(window.localStorage.getItem(THEME_STORAGE_KEY));
+  }
+  applyTheme(savedTheme || preferredThemeFromSystem());
+};
+const toggleTheme = () => {
+  const nextTheme = currentTheme() === 'dark' ? 'light' : 'dark';
+  applyTheme(nextTheme);
+  if (typeof window !== 'undefined' && window.localStorage) {
+    window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+  }
 };
 
 const escapeHtml = (value) => {
@@ -178,6 +221,7 @@ const renderScenarioDescription = (scenario) => {
   setScenarioDescriptionStatus('');
 };
 const scenarioTestCaseId = (scenario) => String(scenario?.testCase?.id || '').trim();
+const scenarioClientName = (scenario) => String(scenario?.testCase?.clientName || '').trim();
 const scenarioProjectName = (scenario) => String(scenario?.testCase?.projectName || '').trim();
 const scenarioWorkName = (scenario) => String(scenario?.testCase?.workName || '').trim();
 const scenarioFilterOptions = (scenarios, resolver) => {
@@ -210,29 +254,54 @@ const fillScenarioFilter = (selectEl, options, allLabel) => {
 };
 const syncScenarioFilters = () => {
   const scenarios = savedScenariosWithTestCase();
-  const projects = scenarioFilterOptions(scenarios, scenarioProjectName);
-  fillScenarioFilter(savedScenarioProjectFilter, projects, 'Selecione o projeto');
-  const selectedProject = savedScenarioProjectFilter ? savedScenarioProjectFilter.value : '';
-  const scopedScenarios = selectedProject
-    ? scenarios.filter((scenario) => scenarioProjectName(scenario) === selectedProject)
+
+  const clients = scenarioFilterOptions(scenarios, scenarioClientName);
+  fillScenarioFilter(savedScenarioClientFilter, clients, 'Selecione o cliente');
+
+  const selectedClient = savedScenarioClientFilter ? savedScenarioClientFilter.value : '';
+  const clientScopedScenarios = selectedClient
+    ? scenarios.filter((scenario) => scenarioClientName(scenario) === selectedClient)
     : [];
-  const works = scenarioFilterOptions(scopedScenarios, scenarioWorkName);
+
+  const projects = scenarioFilterOptions(clientScopedScenarios, scenarioProjectName);
+  fillScenarioFilter(
+    savedScenarioProjectFilter,
+    projects,
+    selectedClient ? 'Selecione o projeto' : 'Escolha o cliente primeiro'
+  );
+
+  const selectedProject = savedScenarioProjectFilter ? savedScenarioProjectFilter.value : '';
+  const projectScopedScenarios = selectedClient && selectedProject
+    ? clientScopedScenarios.filter((scenario) => scenarioProjectName(scenario) === selectedProject)
+    : [];
+  const works = scenarioFilterOptions(projectScopedScenarios, scenarioWorkName);
   fillScenarioFilter(
     savedScenarioWorkFilter,
     works,
-    selectedProject ? 'Selecione o work' : 'Escolha o projeto primeiro'
+    selectedProject
+      ? 'Selecione o work'
+      : selectedClient
+        ? 'Escolha o projeto primeiro'
+        : 'Escolha o cliente primeiro'
   );
+
+  if (savedScenarioProjectFilter) {
+    savedScenarioProjectFilter.disabled = !selectedClient;
+  }
   if (savedScenarioWorkFilter) {
-    savedScenarioWorkFilter.disabled = !selectedProject;
+    savedScenarioWorkFilter.disabled = !(selectedClient && selectedProject);
   }
 };
 const filteredSavedScenarios = () => {
+  const selectedClient = savedScenarioClientFilter ? savedScenarioClientFilter.value : '';
   const selectedProject = savedScenarioProjectFilter ? savedScenarioProjectFilter.value : '';
   const selectedWork = savedScenarioWorkFilter ? savedScenarioWorkFilter.value : '';
-  if (!selectedProject || !selectedWork) return [];
+  if (!selectedClient || !selectedProject || !selectedWork) return [];
   return savedScenariosWithTestCase().filter((scenario) => {
     return (
-      scenarioProjectName(scenario) === selectedProject && scenarioWorkName(scenario) === selectedWork
+      scenarioClientName(scenario) === selectedClient &&
+      scenarioProjectName(scenario) === selectedProject &&
+      scenarioWorkName(scenario) === selectedWork
     );
   });
 };
@@ -248,6 +317,7 @@ const groupedTestCases = (scenarios) => {
         id: testCaseId,
         name: String(testCase.name || '').trim(),
         status: String(testCase.status || '').trim(),
+        clientName: scenarioClientName(scenario),
         projectName: scenarioProjectName(scenario),
         workName: scenarioWorkName(scenario),
         scenarios: [scenario],
@@ -256,6 +326,7 @@ const groupedTestCases = (scenarios) => {
     }
     if (!current.name && testCase.name) current.name = String(testCase.name).trim();
     if (!current.status && testCase.status) current.status = String(testCase.status).trim();
+    if (!current.clientName && scenarioClientName(scenario)) current.clientName = scenarioClientName(scenario);
     if (!current.projectName && scenarioProjectName(scenario)) current.projectName = scenarioProjectName(scenario);
     if (!current.workName && scenarioWorkName(scenario)) current.workName = scenarioWorkName(scenario);
     current.scenarios.push(scenario);
@@ -269,8 +340,8 @@ const groupedTestCases = (scenarios) => {
       ),
     }))
     .sort((a, b) => {
-      const left = `${a.name || ''}${a.id}`.trim();
-      const right = `${b.name || ''}${b.id}`.trim();
+      const left = `${a.clientName || ''}|${a.projectName || ''}|${a.workName || ''}|${a.name || ''}|${a.id}`.trim();
+      const right = `${b.clientName || ''}|${b.projectName || ''}|${b.workName || ''}|${b.name || ''}|${b.id}`.trim();
       return left.localeCompare(right, 'pt-BR', { sensitivity: 'base' });
     });
 };
@@ -427,7 +498,13 @@ const updateRecordVideoToggle = () => {
 };
 
 const updateStatus = () => {
-  statusPill.textContent = state.status;
+  const localizedStatus = {
+    Idle: 'Ocioso',
+    Recording: 'Gravando',
+    Paused: 'Pausado',
+    Replaying: 'Reproduzindo',
+  };
+  statusPill.textContent = localizedStatus[state.status] || state.status;
   statusPill.classList.remove('recording', 'paused', 'replaying');
 
   if (state.status === 'Recording') statusPill.classList.add('recording');
@@ -641,13 +718,22 @@ const renderSavedScenarios = () => {
   if (!linkedScenarios.length) {
     const empty = document.createElement('div');
     empty.className = 'list-item empty-state';
-    empty.textContent = 'Nenhum cenário com caso de teste Salesforce vinculado ainda.';
+    empty.textContent = 'Nenhum cenário com caso de teste Salesforce e cliente vinculado ainda.';
     savedScenariosList.appendChild(empty);
     return;
   }
 
+  const selectedClient = savedScenarioClientFilter ? savedScenarioClientFilter.value : '';
   const selectedProject = savedScenarioProjectFilter ? savedScenarioProjectFilter.value : '';
   const selectedWork = savedScenarioWorkFilter ? savedScenarioWorkFilter.value : '';
+  if (!selectedClient) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item empty-state';
+    empty.textContent = 'Selecione um cliente para listar os casos de teste.';
+    savedScenariosList.appendChild(empty);
+    return;
+  }
+
   if (!selectedProject) {
     const empty = document.createElement('div');
     empty.className = 'list-item empty-state';
@@ -710,9 +796,9 @@ const renderSavedScenarios = () => {
     item.innerHTML = `
       <div class="title">${escapeHtml(testCase.name || 'Caso sem nome')}</div>
       <div class="meta">${escapeHtml(
-        `ID: ${testCase.id} · Status: ${statusLabel} · Projeto: ${testCase.projectName || '—'} · Work: ${
-          testCase.workName || '—'
-        }`
+        `ID: ${testCase.id} · Status: ${statusLabel} · Cliente: ${testCase.clientName || '—'} · Projeto: ${
+          testCase.projectName || '—'
+        } · Work: ${testCase.workName || '—'}`
       )}</div>
       <div class="meta">${testCase.scenarios.length} cenário(s) vinculado(s)</div>
       <div class="case-scenarios">${scenarioRows}</div>
@@ -976,6 +1062,12 @@ if (recordVideoToggle) {
   });
 }
 
+if (themeToggle) {
+  themeToggle.addEventListener('click', () => {
+    toggleTheme();
+  });
+}
+
 if (queueRunBtn) {
   queueRunBtn.addEventListener('click', async () => {
     const overrideUrl = getReplayUrlOverride();
@@ -1127,6 +1219,18 @@ queueList.addEventListener('click', async (event) => {
     await apiRequest(`/api/queue/${id}`, { method: 'DELETE' });
   }
 });
+
+if (savedScenarioClientFilter) {
+  savedScenarioClientFilter.addEventListener('change', () => {
+    if (savedScenarioProjectFilter) {
+      savedScenarioProjectFilter.value = '';
+    }
+    if (savedScenarioWorkFilter) {
+      savedScenarioWorkFilter.value = '';
+    }
+    renderSavedScenarios();
+  });
+}
 
 if (savedScenarioProjectFilter) {
   savedScenarioProjectFilter.addEventListener('change', () => {
@@ -1328,6 +1432,14 @@ if (scenarioModal) {
   });
 }
 
+if (typeof document !== 'undefined') {
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (!scenarioModal || scenarioModal.classList.contains('hidden')) return;
+    closeScenarioDetails();
+  });
+}
+
 const ws = new WebSocket(`ws://${window.location.host}`);
 ws.addEventListener('message', (event) => {
   const message = JSON.parse(event.data);
@@ -1374,4 +1486,5 @@ ws.addEventListener('message', (event) => {
   }
 });
 
+initializeTheme();
 setWorkspaceTab('main');

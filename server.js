@@ -23,7 +23,7 @@ const RECORDINGS_INDEX_FILE = path.join(DATA_DIR, 'recordings-index.json');
 const SALESFORCE_TARGET_ORG = process.env.SALESFORCE_TARGET_ORG || 'Elera';
 const SALESFORCE_ACCEPTANCE_OBJECT = 'agf__ADM_Acceptance_Criterion__c';
 const SALESFORCE_ACCEPTANCE_FIELDS =
-  'Id, Name, agf__Status__c, agf__Description__c, agf__Work__r.Project__r.Name, agf__Work__r.Name';
+  'Id, Name, agf__Status__c, agf__Description__c, agf__Work__r.Project__r.Name, agf__Work__r.Name, agf__Work__r.NomeCliente__c';
 const SALESFORCE_ID_PATTERN = /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/;
 const SALESFORCE_ACCEPTANCE_STATUS_VALUES = new Set(['Passed', 'Failed']);
 const SESSION_FILES = [
@@ -92,6 +92,13 @@ const extractScenarioTestCase = (item) => {
   return {
     id,
     name: normalizeOptionalString(item?.testCase?.name || item?.testCase?.Name || item?.testCaseName),
+    clientName: normalizeOptionalString(
+      item?.testCase?.clientName ||
+        item?.testCase?.client ||
+        item?.testCase?.NomeCliente__c ||
+        item?.testCase?.NomeCliente__C ||
+        item?.testCaseClientName
+    ),
     projectName: normalizeOptionalString(
       item?.testCase?.projectName || item?.testCase?.project || item?.testCaseProjectName
     ),
@@ -142,6 +149,9 @@ const fetchTestCaseFromSalesforce = async (testCaseId) => {
     return {
       id: normalizeOptionalString(record.Id) || testCaseId,
       name: normalizeOptionalString(record.Name),
+      clientName: normalizeOptionalString(
+        record.agf__Work__r?.NomeCliente__c || record.agf__Work__r?.NomeCliente__C
+      ),
       projectName: normalizeOptionalString(record.agf__Work__r?.Project__r?.Name),
       workName: normalizeOptionalString(record.agf__Work__r?.Name),
       status: normalizeAcceptanceStatus(record.agf__Status__c),
@@ -488,6 +498,7 @@ const scenarioSummary = (scenario) => ({
     ? {
         id: scenario.testCase.id,
         name: scenario.testCase.name || null,
+        clientName: scenario.testCase.clientName || null,
         projectName: scenario.testCase.projectName || null,
         workName: scenario.testCase.workName || null,
         status: scenario.testCase.status || null,
@@ -2888,7 +2899,7 @@ app.get('/api/recordings/:name/download', async (req, res) => {
     }
     res.setHeader('Content-Type', 'video/webm');
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
-    return res.sendFile(filePath);
+    return res.sendFile(filePath, { dotfiles: 'allow' });
   } catch (error) {
     return res.status(500).json({ error: 'Falha ao baixar captura.' });
   }
