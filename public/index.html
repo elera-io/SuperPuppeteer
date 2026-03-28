@@ -151,7 +151,7 @@
           aria-controls="workspacePanelScenarios"
           data-workspace-tab="scenarios"
         >
-          Cenários salvos
+          Casos
         </button>
       </div>
 
@@ -197,18 +197,6 @@
             </div>
           </details>
 
-          <details class="card list-card card-wide accordion-card">
-            <summary class="card-header accordion-toggle">
-              <h2>Biblioteca de Capturas</h2>
-              <span class="chip">Vídeos</span>
-            </summary>
-            <div class="accordion-body">
-              <div class="button-row queue-controls">
-                <button id="refreshRecordingsBtn">Atualizar biblioteca</button>
-              </div>
-              <div id="recordingsList" class="list"></div>
-            </div>
-          </details>
         </section>
       </section>
 
@@ -221,18 +209,19 @@
       >
         <div class="card list-card card-wide scenario-tab-card">
           <div class="card-header">
-            <h2>Cenários salvos</h2>
-            <span class="chip">Biblioteca</span>
+            <h2>Casos de teste</h2>
+            <span class="chip">Projeto &gt; Work</span>
           </div>
           <div class="accordion-body">
             <div class="input-row scenario-filters">
               <select id="savedScenarioProjectFilter">
-                <option value="">Todos os projetos</option>
+                <option value="">Selecione o projeto</option>
               </select>
               <select id="savedScenarioWorkFilter">
-                <option value="">Todos os works</option>
+                <option value="">Selecione o work</option>
               </select>
             </div>
+            <p class="hint">Escolha o projeto e o work para visualizar todos os casos de teste vinculados.</p>
             <div id="savedScenariosList" class="list"></div>
           </div>
         </div>

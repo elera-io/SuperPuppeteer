@@ -1,0 +1,10 @@
+# Dependencias
+node_modules/
+
+# Dados locais da aplicacao
+.data/
+.user-data/
+
+# Metadados locais
+.sfdx/
+.DS_Store

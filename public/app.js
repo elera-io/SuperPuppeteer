@@ -21,7 +21,6 @@ const recordVideoToggle = document.getElementById('recordVideoToggle');
 const queueRunBtn = document.getElementById('queueRunBtn');
 const queuePauseBtn = document.getElementById('queuePauseBtn');
 const queueResumeBtn = document.getElementById('queueResumeBtn');
-const refreshRecordingsBtn = document.getElementById('refreshRecordingsBtn');
 const scenarioModal = document.getElementById('scenarioModal');
 const scenarioModalTitle = document.getElementById('scenarioModalTitle');
 const scenarioModalClose = document.getElementById('scenarioModalClose');
@@ -51,7 +50,6 @@ const eventsList = document.getElementById('eventsList');
 const replayLogList = document.getElementById('replayLogList');
 const savedScenariosList = document.getElementById('savedScenariosList');
 const queueList = document.getElementById('queueList');
-const recordingsList = document.getElementById('recordingsList');
 
 const state = {
   status: 'Idle',
@@ -60,7 +58,6 @@ const state = {
   replayLog: [],
   savedScenarios: [],
   queue: [],
-  recordings: [],
   queueStatus: { running: false, paused: false, cursor: 0 },
   lastRecording: null,
   lastKey: '',
@@ -111,16 +108,6 @@ const formatEvent = (event) => {
     : '';
   const time = typeof event.t === 'number' ? `${(event.t / 1000).toFixed(2)}s` : '';
   return { title, detail, value, time };
-};
-const formatScenarioTestCaseMeta = (scenario) => {
-  const testCase = scenario?.testCase;
-  if (!testCase || !testCase.id) return '';
-  const parts = [`ID: ${testCase.id}`];
-  if (testCase.name) parts.push(`Caso: ${testCase.name}`);
-  if (testCase.status) parts.push(`Status: ${testCase.status}`);
-  if (testCase.projectName) parts.push(`Projeto: ${testCase.projectName}`);
-  if (testCase.workName) parts.push(`Work: ${testCase.workName}`);
-  return parts.join(' · ');
 };
 const formatRecordingSource = (recording) => {
   const source = String(recording?.source || '').trim().toLowerCase();
@@ -190,12 +177,16 @@ const renderScenarioDescription = (scenario) => {
   setScenarioStatusFeedback('');
   setScenarioDescriptionStatus('');
 };
+const scenarioTestCaseId = (scenario) => String(scenario?.testCase?.id || '').trim();
 const scenarioProjectName = (scenario) => String(scenario?.testCase?.projectName || '').trim();
 const scenarioWorkName = (scenario) => String(scenario?.testCase?.workName || '').trim();
 const scenarioFilterOptions = (scenarios, resolver) => {
   return [...new Set((scenarios || []).map(resolver).filter(Boolean))].sort((a, b) =>
     a.localeCompare(b, 'pt-BR', { sensitivity: 'base' })
   );
+};
+const savedScenariosWithTestCase = () => {
+  return state.savedScenarios.filter((scenario) => Boolean(scenarioTestCaseId(scenario)));
 };
 const fillScenarioFilter = (selectEl, options, allLabel) => {
   if (!selectEl) return;
@@ -218,19 +209,70 @@ const fillScenarioFilter = (selectEl, options, allLabel) => {
   }
 };
 const syncScenarioFilters = () => {
-  const projects = scenarioFilterOptions(state.savedScenarios, scenarioProjectName);
-  const works = scenarioFilterOptions(state.savedScenarios, scenarioWorkName);
-  fillScenarioFilter(savedScenarioProjectFilter, projects, 'Todos os projetos');
-  fillScenarioFilter(savedScenarioWorkFilter, works, 'Todos os works');
+  const scenarios = savedScenariosWithTestCase();
+  const projects = scenarioFilterOptions(scenarios, scenarioProjectName);
+  fillScenarioFilter(savedScenarioProjectFilter, projects, 'Selecione o projeto');
+  const selectedProject = savedScenarioProjectFilter ? savedScenarioProjectFilter.value : '';
+  const scopedScenarios = selectedProject
+    ? scenarios.filter((scenario) => scenarioProjectName(scenario) === selectedProject)
+    : [];
+  const works = scenarioFilterOptions(scopedScenarios, scenarioWorkName);
+  fillScenarioFilter(
+    savedScenarioWorkFilter,
+    works,
+    selectedProject ? 'Selecione o work' : 'Escolha o projeto primeiro'
+  );
+  if (savedScenarioWorkFilter) {
+    savedScenarioWorkFilter.disabled = !selectedProject;
+  }
 };
 const filteredSavedScenarios = () => {
   const selectedProject = savedScenarioProjectFilter ? savedScenarioProjectFilter.value : '';
   const selectedWork = savedScenarioWorkFilter ? savedScenarioWorkFilter.value : '';
-  return state.savedScenarios.filter((scenario) => {
-    if (selectedProject && scenarioProjectName(scenario) !== selectedProject) return false;
-    if (selectedWork && scenarioWorkName(scenario) !== selectedWork) return false;
-    return true;
+  if (!selectedProject || !selectedWork) return [];
+  return savedScenariosWithTestCase().filter((scenario) => {
+    return (
+      scenarioProjectName(scenario) === selectedProject && scenarioWorkName(scenario) === selectedWork
+    );
   });
+};
+const groupedTestCases = (scenarios) => {
+  const byTestCase = new Map();
+  (scenarios || []).forEach((scenario) => {
+    const testCaseId = scenarioTestCaseId(scenario);
+    if (!testCaseId) return;
+    const testCase = scenario.testCase || {};
+    const current = byTestCase.get(testCaseId);
+    if (!current) {
+      byTestCase.set(testCaseId, {
+        id: testCaseId,
+        name: String(testCase.name || '').trim(),
+        status: String(testCase.status || '').trim(),
+        projectName: scenarioProjectName(scenario),
+        workName: scenarioWorkName(scenario),
+        scenarios: [scenario],
+      });
+      return;
+    }
+    if (!current.name && testCase.name) current.name = String(testCase.name).trim();
+    if (!current.status && testCase.status) current.status = String(testCase.status).trim();
+    if (!current.projectName && scenarioProjectName(scenario)) current.projectName = scenarioProjectName(scenario);
+    if (!current.workName && scenarioWorkName(scenario)) current.workName = scenarioWorkName(scenario);
+    current.scenarios.push(scenario);
+  });
+
+  return [...byTestCase.values()]
+    .map((testCase) => ({
+      ...testCase,
+      scenarios: [...testCase.scenarios].sort((a, b) =>
+        String(a?.name || '').localeCompare(String(b?.name || ''), 'pt-BR', { sensitivity: 'base' })
+      ),
+    }))
+    .sort((a, b) => {
+      const left = `${a.name || ''}${a.id}`.trim();
+      const right = `${b.name || ''}${b.id}`.trim();
+      return left.localeCompare(right, 'pt-BR', { sensitivity: 'base' });
+    });
 };
 
 const formatReplayLogEntry = (entry) => {
@@ -519,6 +561,18 @@ const openScenarioDetails = async (id) => {
   scenarioModal.setAttribute('aria-hidden', 'false');
 };
 
+const openScenarioEvidence = async (id) => {
+  await openScenarioDetails(id);
+  if (scenarioModalTitle && currentScenarioDetails?.name) {
+    scenarioModalTitle.textContent = `Evidências do cenário: ${currentScenarioDetails.name}`;
+  }
+  if (scenarioRecordingsAccordion) {
+    scenarioRecordingsAccordion.hidden = false;
+    scenarioRecordingsAccordion.open = true;
+    scenarioRecordingsAccordion.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+};
+
 const closeScenarioDetails = () => {
   if (!scenarioModal) return;
   scenarioModal.classList.add('hidden');
@@ -583,10 +637,29 @@ const renderReplayLog = () => {
 const renderSavedScenarios = () => {
   syncScenarioFilters();
   savedScenariosList.innerHTML = '';
-  if (!state.savedScenarios.length) {
+  const linkedScenarios = savedScenariosWithTestCase();
+  if (!linkedScenarios.length) {
     const empty = document.createElement('div');
     empty.className = 'list-item';
-    empty.textContent = 'Nenhum cenário salvo ainda.';
+    empty.textContent = 'Nenhum cenário com caso de teste Salesforce vinculado ainda.';
+    savedScenariosList.appendChild(empty);
+    return;
+  }
+
+  const selectedProject = savedScenarioProjectFilter ? savedScenarioProjectFilter.value : '';
+  const selectedWork = savedScenarioWorkFilter ? savedScenarioWorkFilter.value : '';
+  if (!selectedProject) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item';
+    empty.textContent = 'Selecione um projeto para listar os casos de teste.';
+    savedScenariosList.appendChild(empty);
+    return;
+  }
+
+  if (!selectedWork) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item';
+    empty.textContent = 'Selecione um work para listar os casos de teste.';
     savedScenariosList.appendChild(empty);
     return;
   }
@@ -595,34 +668,54 @@ const renderSavedScenarios = () => {
   if (!scenarios.length) {
     const empty = document.createElement('div');
     empty.className = 'list-item';
-    empty.textContent = 'Nenhum cenário encontrado para o filtro selecionado.';
+    empty.textContent = 'Nenhum caso de teste encontrado para o projeto/work selecionados.';
     savedScenariosList.appendChild(empty);
     return;
   }
 
-  scenarios.forEach((scenario) => {
-    const isExtendActive = state.extendScenario && state.extendScenario.id === scenario.id;
-    const extendLabel = isExtendActive ? 'Cancelar extensão' : 'Estender';
-    const extendDisabled = state.status === 'Recording' || state.status === 'Paused' || state.status === 'Replaying';
-    const testCaseMeta = formatScenarioTestCaseMeta(scenario);
+  const testCases = groupedTestCases(scenarios);
+  testCases.forEach((testCase) => {
+    const statusLabel = testCase.status || 'Sem status';
+    const scenarioRows = testCase.scenarios
+      .map((scenario) => {
+        const isExtendActive = state.extendScenario && state.extendScenario.id === scenario.id;
+        const extendLabel = isExtendActive ? 'Cancelar extensão' : 'Estender';
+        const extendDisabled =
+          state.status === 'Recording' || state.status === 'Paused' || state.status === 'Replaying';
+        return `
+          <div class="case-scenario-row">
+            <div class="title">${escapeHtml(scenario.name)}</div>
+            <div class="meta">${
+              Number.isFinite(Number(scenario.eventCount)) ? Number(scenario.eventCount) : 0
+            } eventos · ${formatDuration(scenario.duration)}</div>
+            <div class="scenario-actions">
+              <button data-action="run" data-id="${scenario.id}">Executar</button>
+              <button data-action="queue" data-id="${scenario.id}">Enviar à fila</button>
+              <button data-action="export" data-id="${scenario.id}">Exportar</button>
+              <button data-action="duplicate" data-id="${scenario.id}">Duplicar</button>
+              <button data-action="extend" data-id="${scenario.id}" ${extendDisabled ? 'disabled' : ''}>
+                ${extendLabel}
+              </button>
+              <button data-action="evidence" data-id="${scenario.id}">Evidência</button>
+              <button data-action="details" data-id="${scenario.id}">Detalhes</button>
+              <button data-action="rename" data-id="${scenario.id}">Renomear</button>
+              <button data-action="delete" data-id="${scenario.id}">Remover</button>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
     const item = document.createElement('div');
     item.className = 'list-item';
     item.innerHTML = `
-      <div class="title">${escapeHtml(scenario.name)}</div>
-      <div class="meta">${scenario.eventCount} eventos · ${formatDuration(scenario.duration)}</div>
-      ${testCaseMeta ? `<div class="meta">${escapeHtml(testCaseMeta)}</div>` : ''}
-      <div class="scenario-actions">
-        <button data-action="run" data-id="${scenario.id}">Executar</button>
-        <button data-action="queue" data-id="${scenario.id}">Enviar à fila</button>
-        <button data-action="export" data-id="${scenario.id}">Exportar</button>
-        <button data-action="duplicate" data-id="${scenario.id}">Duplicar</button>
-        <button data-action="extend" data-id="${scenario.id}" ${extendDisabled ? 'disabled' : ''}>
-          ${extendLabel}
-        </button>
-        <button data-action="details" data-id="${scenario.id}">Detalhes</button>
-        <button data-action="rename" data-id="${scenario.id}">Renomear</button>
-        <button data-action="delete" data-id="${scenario.id}">Remover</button>
-      </div>
+      <div class="title">${escapeHtml(testCase.name || 'Caso sem nome')}</div>
+      <div class="meta">${escapeHtml(
+        `ID: ${testCase.id} · Status: ${statusLabel} · Projeto: ${testCase.projectName || '—'} · Work: ${
+          testCase.workName || '—'
+        }`
+      )}</div>
+      <div class="meta">${testCase.scenarios.length} cenário(s) vinculado(s)</div>
+      <div class="case-scenarios">${scenarioRows}</div>
     `;
     savedScenariosList.appendChild(item);
   });
@@ -651,44 +744,6 @@ const renderQueue = () => {
       </div>
     `;
     queueList.appendChild(row);
-  });
-};
-
-const renderRecordings = () => {
-  if (!recordingsList) return;
-  recordingsList.innerHTML = '';
-  if (!state.recordings.length) {
-    const empty = document.createElement('div');
-    empty.className = 'list-item';
-    empty.textContent = 'Nenhuma captura de vídeo encontrada.';
-    recordingsList.appendChild(empty);
-    return;
-  }
-
-  state.recordings.forEach((recording) => {
-    const row = document.createElement('div');
-    row.className = 'list-item';
-    const updatedAt = recording.updatedAt
-      ? new Date(recording.updatedAt).toLocaleString()
-      : '';
-    const executionMeta = [
-      recording.scenarioName ? `Cenário: ${recording.scenarioName}` : 'Sem cenário vinculado',
-      formatRecordingSource(recording),
-    ]
-      .filter(Boolean)
-      .join(' · ');
-    row.innerHTML = `
-      <div class="title">${escapeHtml(recording.name || 'captura.webm')}</div>
-      <div class="meta">${escapeHtml(
-        [formatBytes(recording.size), updatedAt].filter(Boolean).join(' · ')
-      )}</div>
-      <div class="meta">${escapeHtml(executionMeta)}</div>
-      <div class="scenario-actions">
-        <button data-action="download" data-name="${escapeHtml(recording.name || '')}">Baixar</button>
-        <button data-action="delete" data-name="${escapeHtml(recording.name || '')}">Remover</button>
-      </div>
-    `;
-    recordingsList.appendChild(row);
   });
 };
 
@@ -771,7 +826,6 @@ const render = () => {
   renderReplayLog();
   renderSavedScenarios();
   renderQueue();
-  renderRecordings();
 };
 
 const apiRequest = async (url, options = {}) => {
@@ -844,13 +898,6 @@ const importScenarios = async (file) => {
     method: 'POST',
     body: JSON.stringify(payload),
   });
-};
-
-const loadRecordings = async () => {
-  const response = await apiRequest('/api/recordings');
-  const payload = await response.json().catch(() => ({}));
-  state.recordings = Array.isArray(payload.recordings) ? payload.recordings : [];
-  renderRecordings();
 };
 
 const normalizeUrl = (value) => {
@@ -955,12 +1002,6 @@ if (queueResumeBtn) {
   });
 }
 
-if (refreshRecordingsBtn) {
-  refreshRecordingsBtn.addEventListener('click', async () => {
-    await loadRecordings();
-  });
-}
-
 saveScenarioBtn.addEventListener('click', async () => {
   const name = scenarioNameInput.value.trim();
   const testCaseId = scenarioTestCaseIdInput ? scenarioTestCaseIdInput.value.trim() : '';
@@ -1041,6 +1082,10 @@ savedScenariosList.addEventListener('click', async (event) => {
     await openScenarioDetails(id);
   }
 
+  if (action === 'evidence') {
+    await openScenarioEvidence(id);
+  }
+
   if (action === 'rename') {
     const current = state.savedScenarios.find((item) => item.id === id);
     const name = window.prompt('Novo nome do cenário:', current ? current.name : '');
@@ -1077,6 +1122,9 @@ queueList.addEventListener('click', async (event) => {
 
 if (savedScenarioProjectFilter) {
   savedScenarioProjectFilter.addEventListener('change', () => {
+    if (savedScenarioWorkFilter) {
+      savedScenarioWorkFilter.value = '';
+    }
     renderSavedScenarios();
   });
 }
@@ -1092,28 +1140,6 @@ if (workspaceTabButtons.length) {
     button.addEventListener('click', () => {
       setWorkspaceTab(button.dataset.workspaceTab || 'main');
     });
-  });
-}
-
-if (recordingsList) {
-  recordingsList.addEventListener('click', async (event) => {
-    const button = event.target.closest('button');
-    if (!button) return;
-    const action = button.dataset.action;
-    const name = button.dataset.name;
-    if (!action || !name) return;
-
-    if (action === 'download') {
-      await downloadVideoCapture(name);
-      return;
-    }
-
-    if (action === 'delete') {
-      const confirmed = window.confirm(`Remover a captura "${name}"?`);
-      if (!confirmed) return;
-      await apiRequest(`/api/recordings/${encodeURIComponent(name)}`, { method: 'DELETE' });
-      await loadRecordings();
-    }
   });
 }
 
@@ -1141,7 +1167,6 @@ if (scenarioRecordingsList) {
       const confirmed = window.confirm(`Remover a captura "${name}"?`);
       if (!confirmed) return;
       await apiRequest(`/api/recordings/${encodeURIComponent(name)}`, { method: 'DELETE' });
-      await loadRecordings();
       if (currentScenarioDetails?.id) {
         await loadScenarioRecordings(currentScenarioDetails.id);
       }
@@ -1313,8 +1338,13 @@ ws.addEventListener('message', (event) => {
       showScenarioCompletionBanner(message.entry.recordingName);
     }
     renderReplayLog();
-    if (message.entry && message.entry.type === 'video' && message.entry.stage === 'saved') {
-      void loadRecordings();
+    if (
+      message.entry &&
+      message.entry.type === 'video' &&
+      message.entry.stage === 'saved' &&
+      currentScenarioDetails?.id
+    ) {
+      void loadScenarioRecordings(currentScenarioDetails.id);
     }
     return;
   }
@@ -1336,5 +1366,4 @@ ws.addEventListener('message', (event) => {
   }
 });
 
-void loadRecordings();
 setWorkspaceTab('main');

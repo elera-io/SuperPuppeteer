@@ -472,6 +472,11 @@ textarea {
   margin-bottom: 4px;
 }
 
+.scenario-filters select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .hint {
   font-size: 0.82rem;
   color: var(--text-muted);
@@ -535,6 +540,25 @@ textarea {
   border-radius: 10px;
   font-size: 0.78rem;
   background: rgba(255, 255, 255, 0.14);
+}
+
+.case-scenarios {
+  display: grid;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.case-scenario-row {
+  display: grid;
+  gap: 6px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(7, 16, 29, 0.28);
+}
+
+.case-scenario-row .title {
+  font-size: 0.88rem;
 }
 
 .modal {
