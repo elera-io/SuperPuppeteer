@@ -66,8 +66,8 @@
           <h2>Navegação</h2>
           <p class="card-desc">Abra a aplicação alvo antes de iniciar a captura para manter contexto estável.</p>
           <div class="input-row">
-            <input id="urlInput" type="text" placeholder="https://sua-aplicacao.com" />
-            <button id="openUrlBtn">Abrir URL</button>
+            <input id="urlInput" type="text" placeholder="https://sua-aplicacao.com" aria-label="URL da aplicação alvo" />
+            <button id="openUrlBtn" title="Abre a URL no Chrome gerenciado (Enter)">Abrir URL</button>
           </div>
           <p class="hint">Dica: use ambientes homolog/uat para registrar cenários de regressão.</p>
         </div>
@@ -77,14 +77,16 @@
           <h2>Gravação</h2>
           <p class="card-desc">Registre a jornada de teste exatamente como o QA executa no navegador.</p>
           <div class="button-row">
-            <button id="startBtn" class="primary">Iniciar</button>
-            <button id="pauseBtn">Pausar</button>
-            <button id="resumeBtn">Retomar</button>
-            <button id="stopBtn">Encerrar gravação</button>
+            <button id="startBtn" class="primary" title="Inicia a captura de eventos no navegador">Iniciar</button>
+            <button id="pauseBtn" title="Pausa a gravação sem descartar eventos">Pausar</button>
+            <button id="resumeBtn" title="Retoma a gravação pausada">Retomar</button>
+            <button id="stopBtn" title="Encerra a gravação e salva o último registro">Encerrar gravação</button>
           </div>
           <div class="button-row">
-            <button id="exportBtn">Export JSON</button>
-            <button id="closeBtn" class="danger">Encerrar sessão (Chrome)</button>
+            <button id="exportBtn" title="Exporta a última gravação como arquivo JSON">Export JSON</button>
+          </div>
+          <div class="button-row btn-row-danger">
+            <button id="closeBtn" class="danger" title="Fecha completamente a sessão do Chrome gerenciado">Encerrar sessão (Chrome)</button>
           </div>
         </div>
 
@@ -96,10 +98,10 @@
             <input id="replayUrl" type="text" placeholder="URL de execução (opcional)" />
           </div>
           <div class="button-row">
-            <button id="recordVideoToggle" type="button">Gravar vídeo: OFF</button>
+            <button id="recordVideoToggle" type="button" class="video-toggle" title="Ativa/desativa a gravação de vídeo durante o replay">Gravar vídeo: OFF</button>
           </div>
           <div class="button-row">
-            <button id="replayLastBtn" class="primary">Reproduzir último</button>
+            <button id="replayLastBtn" class="primary" title="Executa o último registro encerrado">Reproduzir último</button>
           </div>
         </div>
 
@@ -108,17 +110,18 @@
           <h2>Salvar cenário</h2>
           <p class="card-desc">Versione cenários por nome para reutilização em ciclos de qualidade.</p>
           <div class="input-row">
-            <input id="scenarioName" type="text" placeholder="Nome do cenário" />
+            <input id="scenarioName" type="text" placeholder="Nome do cenário" aria-label="Nome do cenário" />
             <input
               id="scenarioTestCaseId"
               type="text"
               placeholder="ID do caso de teste Salesforce (opcional)"
+              aria-label="ID do caso de teste Salesforce"
             />
-            <button id="saveScenarioBtn">Salvar</button>
+            <button id="saveScenarioBtn" title="Salva a última gravação como cenário reutilizável (Enter)">Salvar</button>
           </div>
           <div class="button-row">
-            <button id="exportScenariosBtn">Exportar cenários</button>
-            <button id="importScenariosBtn">Importar cenários</button>
+            <button id="exportScenariosBtn" title="Exporta todos os cenários salvos como JSON">Exportar cenários</button>
+            <button id="importScenariosBtn" title="Importa cenários a partir de um arquivo JSON">Importar cenários</button>
             <input id="importScenariosInput" type="file" accept="application/json" hidden />
           </div>
           <p class="hint">
@@ -189,9 +192,9 @@
             </summary>
             <div class="accordion-body">
               <div class="button-row queue-controls">
-                <button id="queueRunBtn" class="primary">Executar fila</button>
-                <button id="queuePauseBtn">Pausar fila</button>
-                <button id="queueResumeBtn">Retomar fila</button>
+                <button id="queueRunBtn" class="primary" title="Inicia a execução sequencial de todos os cenários na fila">Executar fila</button>
+                <button id="queuePauseBtn" title="Pausa a execução da fila após o evento atual">Pausar fila</button>
+                <button id="queueResumeBtn" title="Retoma a execução da fila de onde parou">Retomar fila</button>
               </div>
               <div id="queueList" class="list"></div>
             </div>

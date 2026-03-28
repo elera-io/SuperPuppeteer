@@ -592,7 +592,7 @@ const renderEvents = () => {
   eventsList.innerHTML = '';
   if (!state.events.length) {
     const empty = document.createElement('div');
-    empty.className = 'list-item';
+    empty.className = 'list-item empty-state';
     empty.textContent = 'Nenhuma ação capturada ainda.';
     eventsList.appendChild(empty);
     return;
@@ -615,7 +615,7 @@ const renderReplayLog = () => {
   replayLogList.innerHTML = '';
   if (!state.replayLog || !state.replayLog.length) {
     const empty = document.createElement('div');
-    empty.className = 'list-item';
+    empty.className = 'list-item empty-state';
     empty.textContent = 'Sem logs de replay no momento.';
     replayLogList.appendChild(empty);
     return;
@@ -640,7 +640,7 @@ const renderSavedScenarios = () => {
   const linkedScenarios = savedScenariosWithTestCase();
   if (!linkedScenarios.length) {
     const empty = document.createElement('div');
-    empty.className = 'list-item';
+    empty.className = 'list-item empty-state';
     empty.textContent = 'Nenhum cenário com caso de teste Salesforce vinculado ainda.';
     savedScenariosList.appendChild(empty);
     return;
@@ -650,7 +650,7 @@ const renderSavedScenarios = () => {
   const selectedWork = savedScenarioWorkFilter ? savedScenarioWorkFilter.value : '';
   if (!selectedProject) {
     const empty = document.createElement('div');
-    empty.className = 'list-item';
+    empty.className = 'list-item empty-state';
     empty.textContent = 'Selecione um projeto para listar os casos de teste.';
     savedScenariosList.appendChild(empty);
     return;
@@ -658,7 +658,7 @@ const renderSavedScenarios = () => {
 
   if (!selectedWork) {
     const empty = document.createElement('div');
-    empty.className = 'list-item';
+    empty.className = 'list-item empty-state';
     empty.textContent = 'Selecione um work para listar os casos de teste.';
     savedScenariosList.appendChild(empty);
     return;
@@ -667,7 +667,7 @@ const renderSavedScenarios = () => {
   const scenarios = filteredSavedScenarios();
   if (!scenarios.length) {
     const empty = document.createElement('div');
-    empty.className = 'list-item';
+    empty.className = 'list-item empty-state';
     empty.textContent = 'Nenhum caso de teste encontrado para o projeto/work selecionados.';
     savedScenariosList.appendChild(empty);
     return;
@@ -725,7 +725,7 @@ const renderQueue = () => {
   queueList.innerHTML = '';
   if (!state.queue.length) {
     const empty = document.createElement('div');
-    empty.className = 'list-item';
+    empty.className = 'list-item empty-state';
     empty.textContent = 'Fila vazia. Envie cenários para executar em sequência.';
     queueList.appendChild(empty);
     return;
@@ -1020,6 +1020,14 @@ openUrlBtn.addEventListener('click', async () => {
     method: 'POST',
     body: JSON.stringify({ url }),
   });
+});
+
+urlInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') openUrlBtn.click();
+});
+
+scenarioNameInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') saveScenarioBtn.click();
 });
 
 savedScenariosList.addEventListener('click', async (event) => {
