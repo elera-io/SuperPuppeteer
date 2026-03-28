@@ -594,6 +594,38 @@ textarea {
   margin-bottom: 2px;
 }
 
+.error-entry-error {
+  border-left: 3px solid #f87171;
+}
+
+.error-entry-warn {
+  border-left: 3px solid #fbbf24;
+}
+
+.error-stack {
+  margin-top: 6px;
+  font-size: 0.78rem;
+}
+
+.error-stack summary {
+  cursor: pointer;
+  color: #94a3b8;
+  user-select: none;
+}
+
+.error-stack pre {
+  margin: 4px 0 0;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  max-height: 220px;
+}
+
 .scenario-recordings-accordion .list {
   max-height: 240px;
 }

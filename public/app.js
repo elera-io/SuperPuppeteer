@@ -37,6 +37,11 @@ const scenarioDescriptionStatus = document.getElementById('scenarioDescriptionSt
 const scenarioRecordingsAccordion = document.getElementById('scenarioRecordingsAccordion');
 const scenarioRecordingsRefresh = document.getElementById('scenarioRecordingsRefresh');
 const scenarioRecordingsList = document.getElementById('scenarioRecordingsList');
+const scenarioErrorsAccordion = document.getElementById('scenarioErrorsAccordion');
+const scenarioErrorsChip = document.getElementById('scenarioErrorsChip');
+const scenarioErrorsList = document.getElementById('scenarioErrorsList');
+const scenarioErrorsTypeFilter = document.getElementById('scenarioErrorsTypeFilter');
+const scenarioErrorsLevelFilter = document.getElementById('scenarioErrorsLevelFilter');
 
 const urlInput = document.getElementById('urlInput');
 const scenarioNameInput = document.getElementById('scenarioName');
@@ -501,7 +506,64 @@ const renderScenarioInputs = (scenario) => {
   });
 };
 
-const openScenarioDetails = async (id) => {
+const renderScenarioErrors = (scenario, filterType = '', filterLevel = '') => {
+  if (!scenarioErrorsList || !scenarioErrorsAccordion) return;
+
+  const recording = Array.isArray(scenario?.recordingErrors) ? scenario.recordingErrors : [];
+  const execution = Array.isArray(scenario?.executionErrors) ? scenario.executionErrors : [];
+  const allErrors = [
+    ...recording.map((e) => ({ ...e, _phase: 'Gravação' })),
+    ...execution.map((e) => ({ ...e, _phase: 'Execução' })),
+  ];
+
+  const total = allErrors.length;
+  if (scenarioErrorsChip) scenarioErrorsChip.textContent = `${total} erro${total !== 1 ? 's' : ''}`;
+
+  if (total === 0) {
+    scenarioErrorsAccordion.hidden = true;
+    return;
+  }
+  scenarioErrorsAccordion.hidden = false;
+
+  const filtered = allErrors.filter((e) => {
+    if (filterType && e.type !== filterType) return false;
+    if (filterLevel && e.level !== filterLevel) return false;
+    return true;
+  });
+
+  scenarioErrorsList.innerHTML = '';
+  if (!filtered.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item';
+    empty.textContent = 'Nenhum erro para o filtro selecionado.';
+    scenarioErrorsList.appendChild(empty);
+    return;
+  }
+
+  filtered.forEach((entry) => {
+    const item = document.createElement('div');
+    const levelClass = entry.level === 'error' ? 'error-entry-error' : 'error-entry-warn';
+    item.className = `list-item ${levelClass}`;
+    const time = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : '';
+    const typeLabel = { console: 'Console', toast: 'Toast SF', runtime: 'Runtime' }[entry.type] || entry.type;
+    const levelLabel = entry.level === 'warn' ? 'Aviso' : 'Erro';
+    const url = entry.metadata?.url ? String(entry.metadata.url).slice(0, 80) : '';
+    item.innerHTML = `
+      <div class="title">
+        <span class="chip">${escapeHtml(typeLabel)}</span>
+        <span class="chip">${escapeHtml(levelLabel)}</span>
+        <span class="chip">${escapeHtml(entry._phase)}</span>
+        ${time ? `<span class="meta">${escapeHtml(time)}</span>` : ''}
+      </div>
+      <div class="meta">${escapeHtml(String(entry.message || '').slice(0, 300))}</div>
+      ${url ? `<div class="meta mono">${escapeHtml(url)}</div>` : ''}
+      ${entry.stack ? `<details class="error-stack"><summary>Stack trace</summary><pre>${escapeHtml(String(entry.stack).slice(0, 1500))}</pre></details>` : ''}
+    `;
+    scenarioErrorsList.appendChild(item);
+  });
+};
+
+const openScenarioDetails = async (id, openErrors = false) => {
   if (!scenarioModal) return;
   const response = await apiRequest(`/api/scenarios/${id}`);
   const scenario = await response.json();
@@ -511,8 +573,14 @@ const openScenarioDetails = async (id) => {
   }
   renderScenarioDescription(scenario);
   renderScenarioInputs(scenario);
+  renderScenarioErrors(scenario);
+  if (scenarioErrorsAccordion && !scenarioErrorsAccordion.hidden) {
+    scenarioErrorsAccordion.open = openErrors;
+  }
+  if (scenarioErrorsTypeFilter) scenarioErrorsTypeFilter.value = '';
+  if (scenarioErrorsLevelFilter) scenarioErrorsLevelFilter.value = '';
   if (scenarioRecordingsAccordion) {
-    scenarioRecordingsAccordion.open = true;
+    scenarioRecordingsAccordion.open = !openErrors;
   }
   void loadScenarioRecordings(scenario.id);
   scenarioModal.classList.remove('hidden');
@@ -530,6 +598,11 @@ const closeScenarioDetails = () => {
     scenarioRecordingsAccordion.hidden = true;
     scenarioRecordingsAccordion.open = false;
   }
+  if (scenarioErrorsAccordion) {
+    scenarioErrorsAccordion.hidden = true;
+    scenarioErrorsAccordion.open = false;
+  }
+  if (scenarioErrorsList) scenarioErrorsList.innerHTML = '';
   renderScenarioRecordings({ recordings: [] });
   if (scenarioInputsList) scenarioInputsList.innerHTML = '';
 };
@@ -620,6 +693,7 @@ const renderSavedScenarios = () => {
           ${extendLabel}
         </button>
         <button data-action="details" data-id="${scenario.id}">Detalhes</button>
+        <button data-action="errors" data-id="${scenario.id}" ${scenario.errorCount > 0 ? '' : 'disabled'} title="${scenario.errorCount} erro(s) capturado(s)">Ver erros${scenario.errorCount > 0 ? ` (${scenario.errorCount})` : ''}</button>
         <button data-action="rename" data-id="${scenario.id}">Renomear</button>
         <button data-action="delete" data-id="${scenario.id}">Remover</button>
       </div>
@@ -1041,6 +1115,10 @@ savedScenariosList.addEventListener('click', async (event) => {
     await openScenarioDetails(id);
   }
 
+  if (action === 'errors') {
+    await openScenarioDetails(id, true);
+  }
+
   if (action === 'rename') {
     const current = state.savedScenarios.find((item) => item.id === id);
     const name = window.prompt('Novo nome do cenário:', current ? current.name : '');
@@ -1286,6 +1364,28 @@ if (scenarioStatusSave) {
 
 if (scenarioModalClose) {
   scenarioModalClose.addEventListener('click', () => closeScenarioDetails());
+}
+
+if (scenarioErrorsTypeFilter) {
+  scenarioErrorsTypeFilter.addEventListener('change', () => {
+    if (!currentScenarioDetails) return;
+    renderScenarioErrors(
+      currentScenarioDetails,
+      scenarioErrorsTypeFilter.value,
+      scenarioErrorsLevelFilter?.value || ''
+    );
+  });
+}
+
+if (scenarioErrorsLevelFilter) {
+  scenarioErrorsLevelFilter.addEventListener('change', () => {
+    if (!currentScenarioDetails) return;
+    renderScenarioErrors(
+      currentScenarioDetails,
+      scenarioErrorsTypeFilter?.value || '',
+      scenarioErrorsLevelFilter.value
+    );
+  });
 }
 
 if (scenarioModal) {

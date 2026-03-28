@@ -49,6 +49,7 @@ const state = {
   browser: null,
   page: null,
   recordingEnabled: false,
+  executionErrors: null,
 };
 
 const ensureDataDir = () => {
@@ -303,6 +304,8 @@ const loadScenarios = () => {
         duration: item.duration || 0,
         startUrl: item.startUrl || null,
         testCase: extractScenarioTestCase(item),
+        recordingErrors: Array.isArray(item.recordingErrors) ? item.recordingErrors : [],
+        executionErrors: Array.isArray(item.executionErrors) ? item.executionErrors : [],
       }));
     if (Array.isArray(queueList)) {
       state.queue = queueList
@@ -484,6 +487,7 @@ const scenarioSummary = (scenario) => ({
   createdAt: scenario.createdAt,
   duration: scenario.duration,
   eventCount: scenario.events.length,
+  errorCount: (scenario.recordingErrors?.length || 0) + (scenario.executionErrors?.length || 0),
   testCase: scenario.testCase
     ? {
         id: scenario.testCase.id,
@@ -1299,6 +1303,86 @@ const serializeState = () => ({
     : null,
 });
 
+// Injected into every page: captures unhandled rejections and Salesforce toasts.
+const errorCaptureScript = () => {
+  if (window.__errorCaptureInitialized) return;
+  window.__errorCaptureInitialized = true;
+
+  const safeCapture = (entry) => {
+    try { if (window.__captureError) window.__captureError(entry); } catch (_) {}
+  };
+
+  window.addEventListener('unhandledrejection', (event) => {
+    safeCapture({
+      type: 'runtime',
+      level: 'error',
+      message: String(event.reason?.message || event.reason || 'Unhandled rejection'),
+      stack: event.reason?.stack || null,
+      timestamp: new Date().toISOString(),
+      metadata: { url: window.location.href },
+    });
+  });
+
+  const observeToasts = () => {
+    const root = document.body || document.documentElement;
+    if (!root) return;
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          const toast = node.classList?.contains('slds-notify_toast')
+            ? node
+            : node.querySelector?.('.slds-notify_toast');
+          if (!toast) continue;
+          const isError = toast.classList.contains('slds-theme_error');
+          const isWarn = toast.classList.contains('slds-theme_warning');
+          if (!isError && !isWarn) continue;
+          const titleEl = toast.querySelector('.slds-notify__title, [class*="toastTitle"]');
+          const msgEl = toast.querySelector('.slds-notify__message, [class*="toastMessage"]');
+          const msg = [titleEl?.textContent?.trim(), msgEl?.textContent?.trim()]
+            .filter(Boolean).join(': ')
+            || toast.textContent?.trim()?.slice(0, 300)
+            || 'SF Toast error';
+          safeCapture({
+            type: 'toast',
+            level: isError ? 'error' : 'warn',
+            message: msg,
+            timestamp: new Date().toISOString(),
+            metadata: { url: window.location.href, selector: '.slds-notify_toast' },
+          });
+        }
+      }
+    });
+    observer.observe(root, { childList: true, subtree: true });
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', observeToasts);
+  } else {
+    observeToasts();
+  }
+};
+
+const handleCapturedError = (entry) => {
+  if (!entry || typeof entry !== 'object') return;
+  const normalized = {
+    type: String(entry.type || 'console'),
+    level: String(entry.level || 'error'),
+    message: String(entry.message || '').slice(0, 2000),
+    stack: entry.stack ? String(entry.stack).slice(0, 3000) : null,
+    timestamp: entry.timestamp || nowIso(),
+    metadata: entry.metadata && typeof entry.metadata === 'object' ? { ...entry.metadata } : {},
+  };
+  if (state.currentRecording) {
+    state.currentRecording.captureErrors = state.currentRecording.captureErrors || [];
+    state.currentRecording.captureErrors.push(normalized);
+    return;
+  }
+  if (Array.isArray(state.executionErrors)) {
+    state.executionErrors.push(normalized);
+  }
+};
+
 const broadcast = (payload) => {
   const message = JSON.stringify(payload);
   for (const client of wss.clients) {
@@ -1340,7 +1424,33 @@ const setupPage = async (page) => {
   page.__recorderSetup = true;
 
   await page.exposeFunction('__recordEvent', (event) => handleRecordEvent(event));
+  await page.exposeFunction('__captureError', (entry) => handleCapturedError(entry));
   await page.evaluateOnNewDocument(recorderScript);
+  await page.evaluateOnNewDocument(errorCaptureScript);
+
+  page.on('console', (msg) => {
+    const type = msg.type();
+    if (type !== 'error' && type !== 'warning') return;
+    handleCapturedError({
+      type: 'console',
+      level: type === 'warning' ? 'warn' : 'error',
+      message: msg.text(),
+      timestamp: nowIso(),
+      metadata: { url: page.url() },
+    });
+  });
+
+  page.on('pageerror', (error) => {
+    handleCapturedError({
+      type: 'runtime',
+      level: 'error',
+      message: error.message || String(error),
+      stack: error.stack || null,
+      timestamp: nowIso(),
+      metadata: { url: page.url() },
+    });
+  });
+
   try {
     await page.evaluate(recorderScript);
   } catch (error) {
@@ -2082,6 +2192,7 @@ const replayRecording = async (recording, options = {}) => {
   if (options.resetLog !== false) {
     resetReplayLog();
   }
+  state.executionErrors = [];
   state.status = 'Replaying';
   state.recordingEnabled = false;
   broadcastState();
@@ -2246,6 +2357,18 @@ const replayRecording = async (recording, options = {}) => {
       }
     }
 
+    const capturedExecutionErrors = Array.isArray(state.executionErrors)
+      ? [...state.executionErrors]
+      : [];
+    state.executionErrors = null;
+    if (scenarioId && capturedExecutionErrors.length > 0) {
+      const targetScenario = findScenario(scenarioId);
+      if (targetScenario) {
+        targetScenario.executionErrors = capturedExecutionErrors;
+        saveScenarios();
+      }
+    }
+
     state.status = 'Idle';
     pushReplayLog({
       type: 'session',
@@ -2337,6 +2460,7 @@ app.post('/api/recording/start', async (req, res) => {
       duration: baseDuration,
       baseOffset: baseDuration,
       extendScenarioId: extendScenario ? extendScenario.id : null,
+      captureErrors: [],
     };
     state.eventCount = baseEvents.length;
     state.recordingEnabled = true;
@@ -2413,6 +2537,7 @@ app.post('/api/recording/stop', async (req, res) => {
       startUrl: state.currentRecording.startUrl,
       events: state.currentRecording.events,
       duration: finalDuration,
+      captureErrors: state.currentRecording.captureErrors || [],
     };
 
     if (state.currentRecording.extendScenarioId) {
@@ -2423,6 +2548,7 @@ app.post('/api/recording/stop', async (req, res) => {
         if (!scenario.startUrl && state.currentRecording.startUrl) {
           scenario.startUrl = state.currentRecording.startUrl;
         }
+        scenario.recordingErrors = state.currentRecording.captureErrors || [];
         syncQueueScenario(scenario);
         saveScenarios();
       }
@@ -2474,6 +2600,8 @@ app.post('/api/scenarios/save', async (req, res) => {
       duration: state.lastRecording.duration,
       startUrl: state.lastRecording.startUrl,
       testCase,
+      recordingErrors: state.lastRecording.captureErrors || [],
+      executionErrors: [],
     };
     state.savedScenarios.push(scenario);
     saveScenarios();
@@ -2719,6 +2847,8 @@ app.post('/api/scenarios/import', async (req, res) => {
       duration: item.duration || 0,
       startUrl: item.startUrl || null,
       testCase: extractScenarioTestCase(item),
+      recordingErrors: Array.isArray(item.recordingErrors) ? item.recordingErrors : [],
+      executionErrors: Array.isArray(item.executionErrors) ? item.executionErrors : [],
     }));
   state.queue = [];
   state.queueCursor = 0;
