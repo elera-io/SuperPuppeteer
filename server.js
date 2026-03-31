@@ -90,6 +90,14 @@ const normalizeOptionalText = (value) => {
   const normalized = value.replace(/\r\n/g, '\n');
   return normalized.length ? normalized : null;
 };
+const escapeCmdArgument = (value) => {
+  const stringValue = String(value ?? '');
+  if (!stringValue.length) return '""';
+  if (!/[\s"&<>^|()%!]/.test(stringValue)) {
+    return stringValue;
+  }
+  return `"${stringValue.replace(/"/g, '""')}"`;
+};
 const runSalesforceCli = async (args, options = {}) => {
   const resolvedArgs = Array.isArray(args) ? args : [];
   const resolvedOptions = {
@@ -99,11 +107,7 @@ const runSalesforceCli = async (args, options = {}) => {
 
   if (process.platform === 'win32') {
     const commandPath = process.env.COMSPEC || 'cmd.exe';
-    const escapedArgs = resolvedArgs.map((arg) => {
-      const value = String(arg ?? '');
-      if (!value.length) return '""';
-      return `"${value.replace(/"/g, '""')}"`;
-    });
+    const escapedArgs = resolvedArgs.map((arg) => escapeCmdArgument(arg));
     const command = ['sf', ...escapedArgs].join(' ');
     return execFileAsync(commandPath, ['/d', '/s', '/c', command], resolvedOptions);
   }
