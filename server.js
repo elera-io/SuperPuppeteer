@@ -39,6 +39,11 @@ const SESSION_FILES = [
   path.join(PROFILE_DIR, 'Default', 'Last Session'),
   path.join(PROFILE_DIR, 'Default', 'Last Tabs'),
 ];
+const BROWSER_VIEWPORT = {
+  width: 1920,
+  height: 1080,
+  deviceScaleFactor: 1,
+};
 
 const state = {
   status: 'Idle',
@@ -1675,14 +1680,22 @@ const ensureBrowser = async () => {
   const browser = await puppeteer.launch({
     headless: false,
     userDataDir: PROFILE_DIR,
-    defaultViewport: null,
-    args: ['--start-maximized', '--no-first-run', '--no-default-browser-check', '--disable-session-crashed-bubble'],
+    defaultViewport: BROWSER_VIEWPORT,
+    args: [
+      `--window-size=${BROWSER_VIEWPORT.width},${BROWSER_VIEWPORT.height}`,
+      '--force-device-scale-factor=1',
+      '--high-dpi-support=1',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-session-crashed-bubble',
+    ],
   });
 
   state.browser = browser;
 
   const existingPages = await browser.pages();
   const freshPage = await browser.newPage();
+  await freshPage.setViewport(BROWSER_VIEWPORT);
   await setupPage(freshPage);
   await Promise.all(
     existingPages.map((page) =>
