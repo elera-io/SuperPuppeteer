@@ -26,6 +26,11 @@ const SALESFORCE_ACCEPTANCE_FIELDS =
   'Id, Name, agf__Status__c, agf__Description__c, agf__Work__r.Project__r.Name, agf__Work__r.Name';
 const SALESFORCE_ID_PATTERN = /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/;
 const SALESFORCE_ACCEPTANCE_STATUS_VALUES = new Set(['Passed', 'Failed']);
+const BROWSER_VIEWPORT = {
+  width: 1920,
+  height: 1080,
+  deviceScaleFactor: 1,
+};
 const SESSION_FILES = [
   path.join(PROFILE_DIR, 'Default', 'Current Session'),
   path.join(PROFILE_DIR, 'Default', 'Current Tabs'),
@@ -1420,14 +1425,22 @@ const ensureBrowser = async () => {
   const browser = await puppeteer.launch({
     headless: false,
     userDataDir: PROFILE_DIR,
-    defaultViewport: null,
-    args: ['--start-maximized', '--no-first-run', '--no-default-browser-check', '--disable-session-crashed-bubble'],
+    defaultViewport: BROWSER_VIEWPORT,
+    args: [
+      `--window-size=${BROWSER_VIEWPORT.width},${BROWSER_VIEWPORT.height}`,
+      '--force-device-scale-factor=1',
+      '--high-dpi-support=1',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-session-crashed-bubble',
+    ],
   });
 
   state.browser = browser;
 
   const existingPages = await browser.pages();
   const freshPage = await browser.newPage();
+  await freshPage.setViewport(BROWSER_VIEWPORT);
   await setupPage(freshPage);
   await Promise.all(
     existingPages.map((page) =>
