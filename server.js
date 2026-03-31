@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
-const { execFile } = require('child_process');
+const { exec, execFile } = require('child_process');
 const { promisify } = require('util');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer');
@@ -13,6 +13,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
+const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 const PROFILE_DIR = path.join(__dirname, '.user-data', 'chrome-profile');
@@ -45,7 +46,17 @@ const BROWSER_VIEWPORT = {
   deviceScaleFactor: 1,
 };
 const SALESFORCE_CLI_MAX_BUFFER = 1024 * 1024;
-
+const SALESFORCE_CLI_CANDIDATES = (() => {
+  const values = [];
+  const localAppData =
+    typeof process.env.LOCALAPPDATA === 'string' ? process.env.LOCALAPPDATA.trim() : '';
+  if (localAppData) {
+    values.push(path.join(localAppData, 'sf', 'client', 'bin', 'sf.cmd'));
+  }
+  values.push('C:\\Program Files\\sf\\bin\\sf.cmd');
+  values.push('C:\\Program Files (x86)\\sf\\bin\\sf.cmd');
+  return values;
+})();
 const state = {
   status: 'Idle',
   eventCount: 0,
@@ -90,29 +101,45 @@ const normalizeOptionalText = (value) => {
   const normalized = value.replace(/\r\n/g, '\n');
   return normalized.length ? normalized : null;
 };
-const escapeCmdArgument = (value) => {
-  const stringValue = String(value ?? '');
-  if (!stringValue.length) return '""';
-  if (!/[\s"&<>^|()%!]/.test(stringValue)) {
-    return stringValue;
+const quoteWindowsShellArg = (value) => {
+  const normalized = String(value ?? '');
+  return `"${normalized.replace(/"/g, '""')}"`;
+};
+const resolveSalesforceCliCommand = () => {
+  if (process.platform !== 'win32') return 'sf';
+  for (const candidate of SALESFORCE_CLI_CANDIDATES) {
+    try {
+      if (candidate && fs.existsSync(candidate)) {
+        return candidate;
+      }
+    } catch (error) {
+      // ignore filesystem lookup errors and continue with the next candidate
+    }
   }
-  return `"${stringValue.replace(/"/g, '""')}"`;
+  return 'sf';
 };
 const runSalesforceCli = async (args, options = {}) => {
+  const command = resolveSalesforceCliCommand();
   const resolvedArgs = Array.isArray(args) ? args : [];
   const resolvedOptions = {
     maxBuffer: SALESFORCE_CLI_MAX_BUFFER,
+    windowsHide: true,
+    env: {
+      ...process.env,
+      SF_DISABLE_LOG_FILE: process.env.SF_DISABLE_LOG_FILE || 'true',
+      SF_LOG_LEVEL: process.env.SF_LOG_LEVEL || 'error',
+      NO_COLOR: process.env.NO_COLOR || '1',
+      CI: process.env.CI || '1',
+    },
     ...options,
   };
 
   if (process.platform === 'win32') {
-    const commandPath = process.env.COMSPEC || 'cmd.exe';
-    const escapedArgs = resolvedArgs.map((arg) => escapeCmdArgument(arg));
-    const command = ['sf', ...escapedArgs].join(' ');
-    return execFileAsync(commandPath, ['/d', '/s', '/c', command], resolvedOptions);
+    const commandLine = [quoteWindowsShellArg(command), ...resolvedArgs.map(quoteWindowsShellArg)].join(' ');
+    return execAsync(commandLine, resolvedOptions);
   }
 
-  return execFileAsync('sf', resolvedArgs, resolvedOptions);
+  return execFileAsync(command, resolvedArgs, resolvedOptions);
 };
 const normalizeAcceptanceStatus = (value) => {
   if (typeof value !== 'string') return null;
