@@ -44,6 +44,7 @@ const BROWSER_VIEWPORT = {
   height: 1080,
   deviceScaleFactor: 1,
 };
+const SALESFORCE_CLI_MAX_BUFFER = 1024 * 1024;
 
 const state = {
   status: 'Idle',
@@ -88,6 +89,26 @@ const normalizeOptionalText = (value) => {
   if (typeof value !== 'string') return null;
   const normalized = value.replace(/\r\n/g, '\n');
   return normalized.length ? normalized : null;
+};
+const runSalesforceCli = async (args, options = {}) => {
+  const resolvedArgs = Array.isArray(args) ? args : [];
+  const resolvedOptions = {
+    maxBuffer: SALESFORCE_CLI_MAX_BUFFER,
+    ...options,
+  };
+
+  if (process.platform === 'win32') {
+    const commandPath = process.env.COMSPEC || 'cmd.exe';
+    const escapedArgs = resolvedArgs.map((arg) => {
+      const value = String(arg ?? '');
+      if (!value.length) return '""';
+      return `"${value.replace(/"/g, '""')}"`;
+    });
+    const command = ['sf', ...escapedArgs].join(' ');
+    return execFileAsync(commandPath, ['/d', '/s', '/c', command], resolvedOptions);
+  }
+
+  return execFileAsync('sf', resolvedArgs, resolvedOptions);
 };
 const normalizeAcceptanceStatus = (value) => {
   if (typeof value !== 'string') return null;
@@ -174,11 +195,15 @@ const fetchTestCaseFromSalesforce = async (testCaseId) => {
 
   const query = buildAcceptanceCriterionQuery(testCaseId);
   try {
-    const { stdout } = await execFileAsync(
-      'sf',
-      ['data', 'query', '--query', query, '--target-org', SALESFORCE_TARGET_ORG, '--json'],
-      { maxBuffer: 1024 * 1024 }
-    );
+    const { stdout } = await runSalesforceCli([
+      'data',
+      'query',
+      '--query',
+      query,
+      '--target-org',
+      SALESFORCE_TARGET_ORG,
+      '--json',
+    ]);
     const payload = JSON.parse(stdout || '{}');
     const records = Array.isArray(payload?.result?.records) ? payload.result.records : [];
     const record = records[0];
@@ -216,11 +241,14 @@ const fetchTestCaseFromSalesforce = async (testCaseId) => {
 };
 const getSalesforceConnection = async () => {
   try {
-    const { stdout } = await execFileAsync(
-      'sf',
-      ['org', 'display', '--target-org', SALESFORCE_TARGET_ORG, '--verbose', '--json'],
-      { maxBuffer: 1024 * 1024 }
-    );
+    const { stdout } = await runSalesforceCli([
+      'org',
+      'display',
+      '--target-org',
+      SALESFORCE_TARGET_ORG,
+      '--verbose',
+      '--json',
+    ]);
     const payload = JSON.parse(stdout || '{}');
     const result = payload?.result || {};
     const accessToken = normalizeOptionalString(result.accessToken);
@@ -332,11 +360,15 @@ const fetchFailedWorkTemplateFromSalesforce = async (testCaseId) => {
 
   const query = buildFailedWorkTemplateQuery(testCaseId);
   try {
-    const { stdout } = await execFileAsync(
-      'sf',
-      ['data', 'query', '--query', query, '--target-org', SALESFORCE_TARGET_ORG, '--json'],
-      { maxBuffer: 1024 * 1024 }
-    );
+    const { stdout } = await runSalesforceCli([
+      'data',
+      'query',
+      '--query',
+      query,
+      '--target-org',
+      SALESFORCE_TARGET_ORG,
+      '--json',
+    ]);
     const payload = JSON.parse(stdout || '{}');
     const records = Array.isArray(payload?.result?.records) ? payload.result.records : [];
     const record = records[0];
