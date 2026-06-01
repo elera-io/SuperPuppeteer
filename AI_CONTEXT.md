@@ -11,7 +11,7 @@ Leia este arquivo primeiro antes de abrir `server.js` inteiro.
 
 ## Resumo Rapido
 
-- Stack: Node.js (CommonJS), Express, Puppeteer, WebSocket (`ws`).
+- Stack: Node.js (CommonJS), Express, Puppeteer, WebSocket (`ws`), PostgreSQL (`pg`).
 - Entrada backend: `server.js`.
 - Frontend estatico: `public/index.html`, `public/app.js`, `public/styles.css`.
 - Script npm disponivel: `npm start` (`node server.js`).
@@ -24,8 +24,8 @@ Leia este arquivo primeiro antes de abrir `server.js` inteiro.
 - `public/index.html`: UI principal.
 - `public/app.js`: logica de UI, chamadas para API, websocket, renderizacao de listas/modais.
 - `public/styles.css`: tema claro/escuro e layout.
-- `.data/scenarios.json`: persistencia de cenarios e fila.
-- `.data/cloud-scenarios.json`: espelho local de desenvolvimento usado quando `SCENARIO_CLOUD_SYNC_URL` nao esta configurada.
+- LocalStorage (`superpuppeteer.localState.v1`): base local/offline de cenarios e fila por navegador/usuario.
+- `.data/scenarios.json`: espelho/migracao legado do backend; nao e mais a base local principal.
 - `.data/recordings/`: arquivos de video `.webm` do replay.
 - `.data/recordings-index.json`: indice/metadata das execucoes gravadas.
 - `.user-data/chrome-profile/`: perfil do Chrome gerenciado pelo Puppeteer.
@@ -37,6 +37,7 @@ Leia este arquivo primeiro antes de abrir `server.js` inteiro.
 
 - Node.js 18+ recomendado.
 - NPM.
+- PostgreSQL 16 local para o cluster em `.data/postgres` (inicializado com usuario/banco `superpuppeteer` na porta `5433`).
 - Ambiente com UI grafica (o fluxo abre navegador real via Puppeteer).
 
 ## Comandos
@@ -44,6 +45,7 @@ Leia este arquivo primeiro antes de abrir `server.js` inteiro.
 ```powershell
 cd C:\GIT\Repository\SuperPuppeteer
 npm install
+npm run db:start
 npm start
 ```
 
@@ -58,9 +60,9 @@ Nao abrir a UI pelo Live Server (`127.0.0.1:5500`): os botoes dependem das APIs 
 ## Variaveis de Ambiente
 
 - `PORT`: porta HTTP (default `3000`).
-- `SCENARIO_CLOUD_SYNC_URL`: endpoint HTTP externo para sincronizar casos; se ausente, usa `.data/cloud-scenarios.json`.
-- `SCENARIO_CLOUD_DELETE_URL`: endpoint HTTP opcional para excluir casos na nuvem; aceita `{cloudId}` ou `{id}` como placeholder.
-- `SCENARIO_CLOUD_API_KEY`: token opcional enviado como `Authorization: Bearer`.
+- `DATABASE_URL`: conexao PostgreSQL para sincronizacao cloud (`postgres://usuario:senha@host:5432/superpuppeteer`).
+- Alternativa PostgreSQL: `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`.
+- `POSTGRES_SCENARIOS_TABLE`: tabela de destino (default `superpuppeteer_scenarios`).
 - `SALESFORCE_TARGET_ORG`: org alvo do `sf` CLI (default `Elera`).
 - Tambem sao usados internamente no processo do `sf`: `SF_DISABLE_LOG_FILE`, `SF_LOG_LEVEL`, `NO_COLOR`, `CI`.
 
@@ -68,9 +70,24 @@ Exemplo PowerShell:
 
 ```powershell
 $env:PORT=3001
-$env:SCENARIO_CLOUD_SYNC_URL="https://api.exemplo.com/casos"
+$env:DATABASE_URL="postgres://usuario:senha@localhost:5432/superpuppeteer"
 $env:SALESFORCE_TARGET_ORG="Elera"
 npm start
+```
+
+Configuracao local atual em `.env`:
+
+```text
+DATABASE_URL=postgres://superpuppeteer:superpuppeteer@127.0.0.1:5433/superpuppeteer
+POSTGRES_SCENARIOS_TABLE=superpuppeteer_scenarios
+```
+
+Comandos uteis:
+
+```bash
+npm run db:start
+npm run db:status
+npm run db:stop
 ```
 
 ## Fluxo Funcional (Alto Nivel)
@@ -99,13 +116,16 @@ Campos principais de `state`:
 
 ## Persistencia e Sync de Cenarios
 
+- A base local/offline fica no LocalStorage do navegador, chave `superpuppeteer.localState.v1`.
+- Ao abrir a UI, o frontend hidrata o espelho em memoria do backend com os cenarios locais.
+- O backend ainda precisa do espelho em memoria para replay, fila, exportacao e integracao Salesforce.
 - Cada cenario salvo possui `CasoSincronizado`, `cloudId`, `syncedAt` e `syncError`.
 - Novo cenario e duplicata sempre iniciam com `CasoSincronizado: false`.
 - Cenarios antigos sem o campo sao carregados como pendentes (`false`).
 - Cenarios sem caso Salesforce aparecem na aba Casos como `Local > Sem projeto > Sem work`.
 - Edicoes locais relevantes (inputs, rename, extensao, status/descricao Salesforce refletidos no cenario) voltam o cenario para pendente.
-- `POST /api/scenarios/sync` envia somente pendentes. Sucesso marca `CasoSincronizado: true`.
-- Exclusao de cenario recebe `deleteCloud`; se `true`, tenta remover na nuvem antes de remover local.
+- `POST /api/scenarios/sync` envia somente pendentes para PostgreSQL. Sucesso marca `CasoSincronizado: true`.
+- Exclusao de cenario recebe `deleteCloud`; se `true`, tenta remover no PostgreSQL antes de remover local.
 
 ## API REST (Mapa Rapido)
 
@@ -124,6 +144,7 @@ Campos principais de `state`:
 
 - `POST /api/scenarios/save`
 - `POST /api/scenarios/sync`
+- `POST /api/local-state/hydrate`
 - `GET /api/scenarios/:id`
 - `POST /api/scenarios/:id/run`
 - `POST /api/scenarios/:id/rename`

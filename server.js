@@ -6,6 +6,31 @@ const { exec, execFile } = require('child_process');
 const { promisify } = require('util');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer');
+const { Pool } = require('pg');
+
+const loadDotEnv = () => {
+  const envPath = path.join(__dirname, '.env');
+  if (!fs.existsSync(envPath)) return;
+  const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) return;
+    const separatorIndex = trimmed.indexOf('=');
+    if (separatorIndex <= 0) return;
+    const key = trimmed.slice(0, separatorIndex).trim();
+    let value = trimmed.slice(separatorIndex + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (!Object.prototype.hasOwnProperty.call(process.env, key)) {
+      process.env[key] = value;
+    }
+  });
+};
+loadDotEnv();
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -21,19 +46,12 @@ const DATA_DIR = path.join(__dirname, '.data');
 const SCENARIOS_FILE = path.join(DATA_DIR, 'scenarios.json');
 const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings');
 const RECORDINGS_INDEX_FILE = path.join(DATA_DIR, 'recordings-index.json');
-const SCENARIO_CLOUD_MIRROR_FILE = path.join(DATA_DIR, 'cloud-scenarios.json');
-const SCENARIO_CLOUD_SYNC_URL =
-  typeof process.env.SCENARIO_CLOUD_SYNC_URL === 'string'
-    ? process.env.SCENARIO_CLOUD_SYNC_URL.trim()
-    : '';
-const SCENARIO_CLOUD_DELETE_URL =
-  typeof process.env.SCENARIO_CLOUD_DELETE_URL === 'string'
-    ? process.env.SCENARIO_CLOUD_DELETE_URL.trim()
-    : '';
-const SCENARIO_CLOUD_API_KEY =
-  typeof process.env.SCENARIO_CLOUD_API_KEY === 'string'
-    ? process.env.SCENARIO_CLOUD_API_KEY.trim()
-    : '';
+const DATABASE_URL =
+  typeof process.env.DATABASE_URL === 'string' ? process.env.DATABASE_URL.trim() : '';
+const POSTGRES_TABLE =
+  typeof process.env.POSTGRES_SCENARIOS_TABLE === 'string' && process.env.POSTGRES_SCENARIOS_TABLE.trim()
+    ? process.env.POSTGRES_SCENARIOS_TABLE.trim()
+    : 'superpuppeteer_scenarios';
 const SALESFORCE_TARGET_ORG = process.env.SALESFORCE_TARGET_ORG || 'Elera';
 const SALESFORCE_ACCEPTANCE_OBJECT = 'agf__ADM_Acceptance_Criterion__c';
 const SALESFORCE_WORK_OBJECT = 'agf__ADM_Work__c';
@@ -88,6 +106,23 @@ const state = {
   recordingEnabled: false,
 };
 
+const postgresConfigured = Boolean(
+  DATABASE_URL ||
+    process.env.PGHOST ||
+    process.env.PGDATABASE ||
+    process.env.PGUSER ||
+    process.env.PGPASSWORD
+);
+const postgresPool = postgresConfigured
+  ? new Pool(DATABASE_URL ? { connectionString: DATABASE_URL } : undefined)
+  : null;
+const quoteSqlIdentifier = (value) =>
+  `"${String(value || '').replace(/"/g, '""')}"`;
+const postgresScenarioTableSql = POSTGRES_TABLE
+  .split('.')
+  .map((part) => quoteSqlIdentifier(part.trim() || 'superpuppeteer_scenarios'))
+  .join('.');
+
 const ensureDataDir = () => {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 };
@@ -130,7 +165,7 @@ const markScenarioSynced = (scenario, result = {}) => {
   if (!scenario) return;
   scenario.CasoSincronizado = true;
   scenario.cloudId = normalizeOptionalString(result.cloudId) || scenario.cloudId || scenario.id;
-  scenario.syncedAt = nowIso();
+  scenario.syncedAt = normalizeOptionalString(result.syncedAt) || nowIso();
   scenario.syncError = null;
 };
 const quoteWindowsShellArg = (value) => {
@@ -692,16 +727,6 @@ const saveScenarios = () => {
   );
 };
 
-const cloudHeaders = () => {
-  const headers = {
-    'Content-Type': 'application/json',
-  };
-  if (SCENARIO_CLOUD_API_KEY) {
-    headers.Authorization = `Bearer ${SCENARIO_CLOUD_API_KEY}`;
-  }
-  return headers;
-};
-
 const cloneScenarioForCloud = (scenario) => {
   const payload = JSON.parse(JSON.stringify(scenario || {}));
   payload.localId = scenario?.id || payload.localId || null;
@@ -709,35 +734,41 @@ const cloneScenarioForCloud = (scenario) => {
   return payload;
 };
 
-const loadCloudMirror = () => {
-  try {
-    if (!fs.existsSync(SCENARIO_CLOUD_MIRROR_FILE)) return [];
-    const raw = fs.readFileSync(SCENARIO_CLOUD_MIRROR_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    const list = Array.isArray(parsed) ? parsed : parsed?.scenarios;
-    return Array.isArray(list) ? list : [];
-  } catch (error) {
-    return [];
-  }
-};
-
-const saveCloudMirror = (items) => {
-  ensureDataDir();
-  fs.writeFileSync(
-    SCENARIO_CLOUD_MIRROR_FILE,
-    JSON.stringify(
-      {
-        updatedAt: nowIso(),
-        scenarios: Array.isArray(items) ? items : [],
-      },
-      null,
-      2
-    )
+let postgresSchemaReady = false;
+const ensurePostgresConfigured = () => {
+  if (postgresPool) return;
+  const error = new Error(
+    'PostgreSQL não configurado. Defina DATABASE_URL ou PGHOST/PGDATABASE/PGUSER/PGPASSWORD.'
   );
+  error.statusCode = 500;
+  throw error;
 };
-
-const syncScenarioToLocalMirror = async (scenario) => {
-  const mirror = loadCloudMirror();
+const ensurePostgresSchema = async () => {
+  ensurePostgresConfigured();
+  if (postgresSchemaReady) return;
+  await postgresPool.query(`
+    CREATE TABLE IF NOT EXISTS ${postgresScenarioTableSql} (
+      cloud_id TEXT PRIMARY KEY,
+      local_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      test_case_id TEXT,
+      client_name TEXT,
+      project_name TEXT,
+      work_name TEXT,
+      payload JSONB NOT NULL,
+      created_at TIMESTAMPTZ,
+      synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await postgresPool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier(`${POSTGRES_TABLE.replace(/\W+/g, '_')}_local_id_idx`)}
+    ON ${postgresScenarioTableSql} (local_id)
+  `);
+  postgresSchemaReady = true;
+};
+const syncScenarioToPostgres = async (scenario) => {
+  await ensurePostgresSchema();
   const cloudId = normalizeOptionalString(scenario.cloudId) || `cloud_${scenario.id}`;
   const payload = {
     ...cloneScenarioForCloud(scenario),
@@ -745,122 +776,137 @@ const syncScenarioToLocalMirror = async (scenario) => {
     CasoSincronizado: true,
     syncedAt: nowIso(),
   };
-  const index = mirror.findIndex(
-    (item) => item.cloudId === cloudId || item.localId === scenario.id || item.id === scenario.id
-  );
-  if (index === -1) {
-    mirror.push(payload);
-  } else {
-    mirror[index] = {
-      ...mirror[index],
-      ...payload,
-    };
-  }
-  saveCloudMirror(mirror);
-  return {
-    cloudId,
-    provider: 'local-mirror',
-  };
-};
-
-const syncScenarioToHttpCloud = async (scenario) => {
-  const response = await fetch(SCENARIO_CLOUD_SYNC_URL, {
-    method: 'POST',
-    headers: cloudHeaders(),
-    body: JSON.stringify({
-      scenario: cloneScenarioForCloud(scenario),
-    }),
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const detail = salesforceErrorMessage(payload, `HTTP ${response.status}`);
-    const error = new Error(`Falha ao sincronizar o caso "${scenario.name}": ${detail}`);
-    error.statusCode = response.status >= 500 ? 502 : response.status;
-    throw error;
-  }
-  return {
-    cloudId:
-      normalizeOptionalString(payload.cloudId) ||
-      normalizeOptionalString(payload.id) ||
-      normalizeOptionalString(payload.scenario?.cloudId) ||
-      normalizeOptionalString(payload.scenario?.id) ||
-      scenario.cloudId ||
+  const result = await postgresPool.query(
+    `
+      INSERT INTO ${postgresScenarioTableSql} (
+        cloud_id,
+        local_id,
+        name,
+        test_case_id,
+        client_name,
+        project_name,
+        work_name,
+        payload,
+        created_at,
+        synced_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, NOW(), NOW())
+      ON CONFLICT (cloud_id)
+      DO UPDATE SET
+        local_id = EXCLUDED.local_id,
+        name = EXCLUDED.name,
+        test_case_id = EXCLUDED.test_case_id,
+        client_name = EXCLUDED.client_name,
+        project_name = EXCLUDED.project_name,
+        work_name = EXCLUDED.work_name,
+        payload = EXCLUDED.payload,
+        created_at = EXCLUDED.created_at,
+        synced_at = NOW(),
+        updated_at = NOW()
+      RETURNING cloud_id, synced_at
+    `,
+    [
+      cloudId,
       scenario.id,
-    provider: 'http',
-  };
-};
-
-const syncScenarioToCloud = async (scenario) => {
-  if (SCENARIO_CLOUD_SYNC_URL) {
-    return syncScenarioToHttpCloud(scenario);
-  }
-  return syncScenarioToLocalMirror(scenario);
-};
-
-const resolveCloudDeleteUrl = (scenario) => {
-  const baseUrl = SCENARIO_CLOUD_DELETE_URL || SCENARIO_CLOUD_SYNC_URL;
-  if (!baseUrl) return '';
-  const cloudId = encodeURIComponent(scenario.cloudId || scenario.id);
-  if (baseUrl.includes('{cloudId}')) return baseUrl.replace('{cloudId}', cloudId);
-  if (baseUrl.includes('{id}')) return baseUrl.replace('{id}', cloudId);
-  return `${baseUrl.replace(/\/+$/, '')}/${cloudId}`;
-};
-
-const deleteScenarioFromLocalMirror = async (scenario) => {
-  const mirror = loadCloudMirror();
-  const targetIds = new Set(
-    [scenario.cloudId, `cloud_${scenario.id}`, scenario.id].map(normalizeOptionalString).filter(Boolean)
+      scenario.name || 'Cenário',
+      normalizeOptionalString(scenario?.testCase?.id),
+      normalizeOptionalString(scenario?.testCase?.clientName),
+      normalizeOptionalString(scenario?.testCase?.projectName),
+      normalizeOptionalString(scenario?.testCase?.workName),
+      JSON.stringify(payload),
+      scenario.createdAt || null,
+    ]
   );
-  const nextMirror = mirror.filter((item) => {
-    const itemIds = [item.cloudId, item.localId, item.id].map(normalizeOptionalString).filter(Boolean);
-    return !itemIds.some((id) => targetIds.has(id));
-  });
-  saveCloudMirror(nextMirror);
   return {
-    ok: true,
-    provider: 'local-mirror',
-    removed: mirror.length !== nextMirror.length,
+    cloudId: normalizeOptionalString(result.rows?.[0]?.cloud_id) || cloudId,
+    syncedAt: result.rows?.[0]?.synced_at ? new Date(result.rows[0].synced_at).toISOString() : nowIso(),
+    provider: 'postgres',
   };
 };
-
-const deleteScenarioFromHttpCloud = async (scenario) => {
-  const url = resolveCloudDeleteUrl(scenario);
-  if (!url) {
-    const error = new Error('Endpoint de exclusão na nuvem não configurado.');
-    error.statusCode = 400;
-    throw error;
-  }
-  const response = await fetch(url, {
-    method: 'DELETE',
-    headers: cloudHeaders(),
-    body: JSON.stringify({
-      cloudId: scenario.cloudId || null,
-      localId: scenario.id,
-      scenario: cloneScenarioForCloud(scenario),
-    }),
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const detail = salesforceErrorMessage(payload, `HTTP ${response.status}`);
-    const error = new Error(`Falha ao remover o caso "${scenario.name}" da nuvem: ${detail}`);
-    error.statusCode = response.status >= 500 ? 502 : response.status;
-    throw error;
-  }
+const syncScenarioToCloud = async (scenario) => syncScenarioToPostgres(scenario);
+const deleteScenarioFromPostgres = async (scenario) => {
+  await ensurePostgresSchema();
+  const cloudId = normalizeOptionalString(scenario.cloudId);
+  const params = cloudId ? [cloudId, scenario.id] : [scenario.id];
+  const condition = cloudId ? 'cloud_id = $1 OR local_id = $2' : 'local_id = $1';
+  const result = await postgresPool.query(
+    `DELETE FROM ${postgresScenarioTableSql} WHERE ${condition}`,
+    params
+  );
   return {
     ok: true,
-    provider: 'http',
+    provider: 'postgres',
+    removed: result.rowCount || 0,
   };
 };
-
 const deleteScenarioFromCloud = async (scenario) => {
   if (!scenario) return { ok: true, skipped: true };
   if (!asBoolean(scenario.CasoSincronizado) && !normalizeOptionalString(scenario.cloudId)) {
     return { ok: true, skipped: true };
   }
-  if (SCENARIO_CLOUD_SYNC_URL || SCENARIO_CLOUD_DELETE_URL) {
-    return deleteScenarioFromHttpCloud(scenario);
-  }
-  return deleteScenarioFromLocalMirror(scenario);
+  return deleteScenarioFromPostgres(scenario);
+};
+const normalizeCloudScenarioRow = (row = {}) => {
+  const payload =
+    row.payload && typeof row.payload === 'object'
+      ? JSON.parse(JSON.stringify(row.payload))
+      : {};
+  const testCase = extractScenarioTestCase({
+    ...payload,
+    testCaseId: payload.testCaseId || row.test_case_id,
+    testCase: {
+      ...(payload.testCase || {}),
+      id: payload.testCase?.id || payload.testCase?.Id || row.test_case_id,
+      name: payload.testCase?.name || payload.testCase?.Name || row.name,
+      clientName: payload.testCase?.clientName || row.client_name,
+      projectName: payload.testCase?.projectName || row.project_name,
+      workName: payload.testCase?.workName || row.work_name,
+    },
+  });
+  const events = Array.isArray(payload.events) ? payload.events : [];
+  const syncedAt = row.synced_at ? new Date(row.synced_at).toISOString() : payload.syncedAt || nowIso();
+  return {
+    ...payload,
+    id: normalizeOptionalString(payload.id) || normalizeOptionalString(row.local_id) || generateId('scn'),
+    name: normalizeOptionalString(payload.name) || normalizeOptionalString(row.name) || 'Cenário',
+    createdAt: payload.createdAt || (row.created_at ? new Date(row.created_at).toISOString() : syncedAt),
+    events,
+    duration: Number(payload.duration) || eventsDuration(events, 0),
+    startUrl: payload.startUrl || null,
+    testCase,
+    CasoSincronizado: true,
+    cloudId: normalizeOptionalString(row.cloud_id) || normalizeOptionalString(payload.cloudId),
+    syncedAt,
+    syncError: null,
+  };
+};
+const listCloudScenariosFromPostgres = async (limit = 200) => {
+  await ensurePostgresSchema();
+  const resolvedLimit = Math.min(Math.max(Number(limit) || 200, 1), 1000);
+  const result = await postgresPool.query(
+    `
+      SELECT
+        cloud_id,
+        local_id,
+        name,
+        test_case_id,
+        client_name,
+        project_name,
+        work_name,
+        payload,
+        created_at,
+        synced_at,
+        updated_at
+      FROM ${postgresScenarioTableSql}
+      ORDER BY synced_at DESC, updated_at DESC
+      LIMIT $1
+    `,
+    [resolvedLimit]
+  );
+  return result.rows
+    .map((row) => normalizeCloudScenarioRow(row))
+    .filter((scenario) => Array.isArray(scenario.events));
 };
 
 const normalizeRecordingsIndexEntry = (entry) => {
@@ -1010,7 +1056,9 @@ const scenarioSummary = (scenario) => ({
   name: scenario.name,
   createdAt: scenario.createdAt,
   duration: scenario.duration,
+  startUrl: scenario.startUrl || null,
   eventCount: scenario.events.length,
+  events: Array.isArray(scenario.events) ? JSON.parse(JSON.stringify(scenario.events)) : [],
   CasoSincronizado: asBoolean(scenario.CasoSincronizado),
   cloudId: scenario.cloudId || null,
   syncedAt: scenario.syncedAt || null,
@@ -3150,9 +3198,61 @@ app.post('/api/scenarios/sync', async (req, res) => {
     pending: pendingScenarios.length,
     synced,
     failed,
-    provider: SCENARIO_CLOUD_SYNC_URL ? 'http' : 'local-mirror',
+    provider: 'postgres',
     results,
   });
+});
+
+app.get('/api/scenarios/cloud', async (req, res) => {
+  try {
+    const scenarios = await listCloudScenariosFromPostgres(req.query?.limit);
+    return res.json({
+      ok: true,
+      provider: 'postgres',
+      scenarios: scenarios.map((scenario) => scenarioSummary(scenario)),
+    });
+  } catch (error) {
+    return res.status(Number(error.statusCode) || 502).json({
+      error: error.message || 'Falha ao carregar casos da nuvem.',
+    });
+  }
+});
+
+app.post('/api/local-state/hydrate', async (req, res) => {
+  const scenarios = Array.isArray(req.body?.savedScenarios) ? req.body.savedScenarios : [];
+  const queue = Array.isArray(req.body?.queue) ? req.body.queue : [];
+
+  state.savedScenarios = scenarios
+    .filter((item) => item && Array.isArray(item.events))
+    .map((item, index) => ({
+      id: item.id || generateId('scn'),
+      name: item.name || `Cenário ${index + 1}`,
+      createdAt: item.createdAt || nowIso(),
+      events: cloneEvents(item.events || []),
+      duration: item.duration || eventsDuration(item.events, 0),
+      startUrl: item.startUrl || null,
+      testCase: extractScenarioTestCase(item),
+      ...normalizeSyncMetadata(item),
+    }));
+  state.queue = queue
+    .filter((item) => item && (item.scenarioId || item.scenario?.id))
+    .map((item) => ({
+      id: item.id || generateId('q'),
+      scenarioId: item.scenarioId || item.scenario?.id || null,
+      name: item.name || item.scenario?.name || 'Cenário',
+      duration: item.duration || item.scenario?.duration || 0,
+      eventCount: item.eventCount || item.scenario?.events?.length || 0,
+    }))
+    .filter((item) => item.scenarioId && state.savedScenarios.some((scenario) => scenario.id === item.scenarioId));
+  state.queueCursor = 0;
+  state.queuePaused = false;
+  state.queueRunning = false;
+  state.queueRecordVideo = false;
+  state.extendScenarioId = null;
+
+  saveScenarios();
+  broadcastState();
+  return res.json({ ok: true, state: serializeState() });
 });
 
 app.get('/api/scenarios/:id', async (req, res) => {

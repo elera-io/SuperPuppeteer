@@ -712,6 +712,35 @@ textarea {
   gap: 10px;
 }
 
+.cloud-import-tools {
+  margin-bottom: 2px;
+}
+
+.cloud-import-list {
+  max-height: 56vh;
+}
+
+.cloud-scenario-row {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  cursor: pointer;
+}
+
+.cloud-scenario-row input {
+  margin-top: 4px;
+}
+
+.cloud-scenario-row-disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+.cloud-scenario-content {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
 .sync-chip {
   flex-shrink: 0;
   display: inline-flex;

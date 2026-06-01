@@ -14,6 +14,7 @@ const replayLastBtn = document.getElementById('replayLastBtn');
 const saveScenarioBtn = document.getElementById('saveScenarioBtn');
 const openUrlBtn = document.getElementById('openUrlBtn');
 const syncScenariosBtn = document.getElementById('syncScenariosBtn');
+const importCloudScenariosBtn = document.getElementById('importCloudScenariosBtn');
 const exportScenariosBtn = document.getElementById('exportScenariosBtn');
 const importScenariosBtn = document.getElementById('importScenariosBtn');
 const importScenariosInput = document.getElementById('importScenariosInput');
@@ -53,6 +54,14 @@ const deleteScenarioStatus = document.getElementById('deleteScenarioStatus');
 const deleteScenarioLocal = document.getElementById('deleteScenarioLocal');
 const deleteScenarioCloud = document.getElementById('deleteScenarioCloud');
 const deleteScenarioCancel = document.getElementById('deleteScenarioCancel');
+const cloudImportModal = document.getElementById('cloudImportModal');
+const cloudImportClose = document.getElementById('cloudImportClose');
+const cloudImportCancel = document.getElementById('cloudImportCancel');
+const cloudImportRefresh = document.getElementById('cloudImportRefresh');
+const cloudImportSelectAll = document.getElementById('cloudImportSelectAll');
+const cloudImportConfirm = document.getElementById('cloudImportConfirm');
+const cloudImportList = document.getElementById('cloudImportList');
+const cloudImportStatus = document.getElementById('cloudImportStatus');
 
 const urlInput = document.getElementById('urlInput');
 const scenarioNameInput = document.getElementById('scenarioName');
@@ -91,12 +100,15 @@ let currentScenarioDetails = null;
 let currentScenarioRecordings = [];
 let pendingFailedWorkContext = null;
 let pendingDeleteScenarioId = null;
+let cloudScenarioCandidates = [];
 let scenarioCompletionTimeout = null;
+let localStateHydrated = false;
 const workspacePanels = {
   main: workspacePanelMain,
   scenarios: workspacePanelScenarios,
 };
 const THEME_STORAGE_KEY = 'uiThemePreference';
+const LOCAL_STATE_STORAGE_KEY = 'superpuppeteer.localState.v1';
 
 const normalizeTheme = (value) => {
   const normalized = String(value || '').trim().toLowerCase();
@@ -145,6 +157,75 @@ const escapeHtml = (value) => {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+};
+
+const normalizeLocalScenario = (item, index = 0) => {
+  if (!item || !Array.isArray(item.events)) return null;
+  return {
+    ...item,
+    id: String(item.id || `local_${Date.now()}_${index}`),
+    name: String(item.name || `Cenário ${index + 1}`),
+    createdAt: item.createdAt || new Date().toISOString(),
+    events: item.events,
+    duration: Number(item.duration) || 0,
+    startUrl: item.startUrl || null,
+    testCase: item.testCase || null,
+    CasoSincronizado: item.CasoSincronizado === true,
+    cloudId: item.cloudId || null,
+    syncedAt: item.syncedAt || null,
+    syncError: item.syncError || null,
+  };
+};
+const loadLocalState = () => {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return { savedScenarios: [], queue: [] };
+  }
+  try {
+    const raw = window.localStorage.getItem(LOCAL_STATE_STORAGE_KEY);
+    if (!raw) return { savedScenarios: [], queue: [] };
+    const parsed = JSON.parse(raw);
+    const savedScenarios = Array.isArray(parsed?.savedScenarios)
+      ? parsed.savedScenarios.map(normalizeLocalScenario).filter(Boolean)
+      : [];
+    const scenarioIds = new Set(savedScenarios.map((scenario) => scenario.id));
+    const queue = Array.isArray(parsed?.queue)
+      ? parsed.queue
+          .filter((item) => item && scenarioIds.has(item.scenarioId))
+          .map((item) => ({
+            id: String(item.id || `q_${Date.now()}`),
+            scenarioId: item.scenarioId,
+            name: item.name || 'Cenário',
+            duration: Number(item.duration) || 0,
+            eventCount: Number(item.eventCount) || 0,
+          }))
+      : [];
+    return { savedScenarios, queue };
+  } catch (error) {
+    return { savedScenarios: [], queue: [] };
+  }
+};
+const persistLocalState = () => {
+  if (!localStateHydrated || typeof window === 'undefined' || !window.localStorage) return;
+  const payload = {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    savedScenarios: Array.isArray(state.savedScenarios) ? state.savedScenarios : [],
+    queue: Array.isArray(state.queue) ? state.queue : [],
+  };
+  window.localStorage.setItem(LOCAL_STATE_STORAGE_KEY, JSON.stringify(payload));
+};
+const hydrateServerFromLocalState = async () => {
+  try {
+    await apiRequest('/api/local-state/hydrate', {
+      method: 'POST',
+      body: JSON.stringify({
+        savedScenarios: state.savedScenarios,
+        queue: state.queue,
+      }),
+    });
+  } catch (error) {
+    window.alert(error.message || 'Falha ao carregar a base local no servidor.');
+  }
 };
 
 const formatDuration = (ms) => {
@@ -1259,6 +1340,184 @@ const syncScenarios = async () => {
   }
 };
 
+const cloudScenarioKey = (scenario) =>
+  String(scenario?.cloudId || scenario?.id || '').trim();
+const scenarioAlreadyImported = (scenario) => {
+  const cloudId = String(scenario?.cloudId || '').trim();
+  const localId = String(scenario?.id || '').trim();
+  return state.savedScenarios.some((item) => {
+    const itemCloudId = String(item?.cloudId || '').trim();
+    const itemId = String(item?.id || '').trim();
+    return (cloudId && itemCloudId === cloudId) || (localId && itemId === localId);
+  });
+};
+const nextImportedScenarioId = (index = 0) =>
+  `imported_${Date.now().toString(36)}_${index}_${Math.random().toString(36).slice(2, 7)}`;
+const selectedCloudScenarioKeys = () => {
+  if (!cloudImportList) return new Set();
+  return new Set(
+    [...cloudImportList.querySelectorAll('input[data-cloud-key]:checked')].map((input) =>
+      input.getAttribute('data-cloud-key')
+    )
+  );
+};
+const updateCloudImportConfirmState = () => {
+  if (!cloudImportConfirm) return;
+  cloudImportConfirm.disabled = selectedCloudScenarioKeys().size === 0;
+};
+const renderCloudImportList = (options = {}) => {
+  if (!cloudImportList) return;
+  const loading = Boolean(options.loading);
+  cloudImportList.innerHTML = '';
+  if (loading) {
+    const loadingItem = document.createElement('div');
+    loadingItem.className = 'list-item empty-state';
+    loadingItem.textContent = 'Carregando casos da nuvem...';
+    cloudImportList.appendChild(loadingItem);
+    if (cloudImportStatus) cloudImportStatus.textContent = 'Consultando o PostgreSQL remoto.';
+    updateCloudImportConfirmState();
+    return;
+  }
+
+  if (!cloudScenarioCandidates.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item empty-state';
+    empty.textContent = 'Nenhum caso encontrado na nuvem.';
+    cloudImportList.appendChild(empty);
+    if (cloudImportStatus) cloudImportStatus.textContent = 'Nenhum caso retornado pelo PostgreSQL remoto.';
+    updateCloudImportConfirmState();
+    return;
+  }
+
+  const availableCount = cloudScenarioCandidates.filter((scenario) => !scenarioAlreadyImported(scenario)).length;
+  if (cloudImportStatus) {
+    cloudImportStatus.textContent = `${cloudScenarioCandidates.length} caso(s) na nuvem, ${availableCount} disponível(is) para importar.`;
+  }
+
+  cloudScenarioCandidates.forEach((scenario, index) => {
+    const key = cloudScenarioKey(scenario) || `cloud_${index}`;
+    const imported = scenarioAlreadyImported(scenario);
+    const syncedAt = scenario.syncedAt ? new Date(scenario.syncedAt).toLocaleString() : '—';
+    const item = document.createElement('label');
+    item.className = `list-item cloud-scenario-row${imported ? ' cloud-scenario-row-disabled' : ''}`;
+    item.innerHTML = `
+      <input
+        type="checkbox"
+        data-cloud-key="${escapeHtml(key)}"
+        ${imported ? 'disabled' : ''}
+      />
+      <div class="cloud-scenario-content">
+        <div class="case-scenario-title">
+          <div class="title">${escapeHtml(scenario.name || 'Cenário')}</div>
+          <span class="sync-chip ${imported ? 'sync-pending' : 'sync-ok'}">
+            ${imported ? 'Já importado' : 'Na nuvem'}
+          </span>
+        </div>
+        <div class="meta">${escapeHtml(
+          `Cliente: ${scenarioClientName(scenario)} · Projeto: ${scenarioProjectName(scenario)} · Work: ${scenarioWorkName(scenario)}`
+        )}</div>
+        <div class="meta">${escapeHtml(
+          `${Number(scenario.eventCount || scenario.events?.length || 0)} eventos · ${formatDuration(
+            scenario.duration
+          )} · Sincronizado em ${syncedAt}`
+        )}</div>
+      </div>
+    `;
+    cloudImportList.appendChild(item);
+  });
+  updateCloudImportConfirmState();
+};
+const loadCloudScenarios = async () => {
+  renderCloudImportList({ loading: true });
+  const response = await apiRequest('/api/scenarios/cloud?limit=500');
+  const payload = await response.json().catch(() => ({}));
+  cloudScenarioCandidates = Array.isArray(payload.scenarios)
+    ? payload.scenarios.map(normalizeLocalScenario).filter(Boolean)
+    : [];
+  renderCloudImportList();
+};
+const openCloudImportModal = async () => {
+  if (!cloudImportModal) return;
+  cloudImportModal.classList.remove('hidden');
+  cloudImportModal.setAttribute('aria-hidden', 'false');
+  cloudScenarioCandidates = [];
+  try {
+    await loadCloudScenarios();
+  } catch (error) {
+    showCloudImportError(error);
+  }
+};
+const showCloudImportError = (error) => {
+  cloudScenarioCandidates = [];
+  if (cloudImportList) {
+    cloudImportList.innerHTML = '';
+    const item = document.createElement('div');
+    item.className = 'list-item empty-state';
+    item.textContent = error?.message || 'Falha ao carregar casos da nuvem.';
+    cloudImportList.appendChild(item);
+  }
+  if (cloudImportStatus) cloudImportStatus.textContent = 'Não foi possível consultar a nuvem.';
+  updateCloudImportConfirmState();
+};
+const closeCloudImportModal = () => {
+  if (!cloudImportModal) return;
+  cloudImportModal.classList.add('hidden');
+  cloudImportModal.setAttribute('aria-hidden', 'true');
+  cloudScenarioCandidates = [];
+  if (cloudImportList) cloudImportList.innerHTML = '';
+  if (cloudImportStatus) {
+    cloudImportStatus.textContent = 'Selecione os casos do PostgreSQL remoto para trazer para esta máquina.';
+  }
+  updateCloudImportConfirmState();
+};
+const selectAvailableCloudScenarios = () => {
+  if (!cloudImportList) return;
+  cloudImportList.querySelectorAll('input[data-cloud-key]:not(:disabled)').forEach((input) => {
+    input.checked = true;
+  });
+  updateCloudImportConfirmState();
+};
+const importSelectedCloudScenarios = async () => {
+  const selectedKeys = selectedCloudScenarioKeys();
+  if (!selectedKeys.size) {
+    window.alert('Selecione pelo menos um caso para importar.');
+    return;
+  }
+
+  const existingIds = new Set(state.savedScenarios.map((scenario) => scenario.id).filter(Boolean));
+  const existingCloudIds = new Set(state.savedScenarios.map((scenario) => scenario.cloudId).filter(Boolean));
+  const imported = [];
+  cloudScenarioCandidates.forEach((scenario, index) => {
+    const key = cloudScenarioKey(scenario) || `cloud_${index}`;
+    if (!selectedKeys.has(key) || scenarioAlreadyImported(scenario)) return;
+    const cloned = normalizeLocalScenario(JSON.parse(JSON.stringify(scenario)), state.savedScenarios.length + index);
+    if (!cloned) return;
+    cloned.CasoSincronizado = true;
+    cloned.syncError = null;
+    cloned.syncedAt = cloned.syncedAt || new Date().toISOString();
+    if (cloned.cloudId && existingCloudIds.has(cloned.cloudId)) return;
+    if (existingIds.has(cloned.id)) {
+      cloned.id = nextImportedScenarioId(index);
+    }
+    existingIds.add(cloned.id);
+    if (cloned.cloudId) existingCloudIds.add(cloned.cloudId);
+    imported.push(cloned);
+  });
+
+  if (!imported.length) {
+    window.alert('Nenhum caso novo para importar.');
+    renderCloudImportList();
+    return;
+  }
+
+  state.savedScenarios = [...state.savedScenarios, ...imported];
+  persistLocalState();
+  render();
+  await hydrateServerFromLocalState();
+  window.alert(`${imported.length} caso(s) importado(s) da nuvem.`);
+  closeCloudImportModal();
+};
+
 const normalizeUrl = (value) => {
   if (!value) return '';
   if (/^https?:\/\//i.test(value)) return value;
@@ -1326,6 +1585,12 @@ if (exportScenariosBtn) {
 if (syncScenariosBtn) {
   syncScenariosBtn.addEventListener('click', async () => {
     await syncScenarios();
+  });
+}
+
+if (importCloudScenariosBtn) {
+  importCloudScenariosBtn.addEventListener('click', async () => {
+    await openCloudImportModal();
   });
 }
 
@@ -1854,9 +2119,64 @@ if (deleteScenarioModal) {
   });
 }
 
+if (cloudImportClose) {
+  cloudImportClose.addEventListener('click', () => closeCloudImportModal());
+}
+
+if (cloudImportCancel) {
+  cloudImportCancel.addEventListener('click', () => closeCloudImportModal());
+}
+
+if (cloudImportRefresh) {
+  cloudImportRefresh.addEventListener('click', async () => {
+    try {
+      await loadCloudScenarios();
+    } catch (error) {
+      showCloudImportError(error);
+      window.alert(error.message || 'Falha ao atualizar casos da nuvem.');
+    }
+  });
+}
+
+if (cloudImportSelectAll) {
+  cloudImportSelectAll.addEventListener('click', () => selectAvailableCloudScenarios());
+}
+
+if (cloudImportConfirm) {
+  cloudImportConfirm.addEventListener('click', async () => {
+    cloudImportConfirm.disabled = true;
+    try {
+      await importSelectedCloudScenarios();
+    } catch (error) {
+      window.alert(error.message || 'Falha ao importar casos da nuvem.');
+    } finally {
+      updateCloudImportConfirmState();
+    }
+  });
+}
+
+if (cloudImportList) {
+  cloudImportList.addEventListener('change', (event) => {
+    if (event.target.matches('input[data-cloud-key]')) {
+      updateCloudImportConfirmState();
+    }
+  });
+}
+
+if (cloudImportModal) {
+  cloudImportModal.addEventListener('click', (event) => {
+    const closeTarget = event.target.closest('[data-action="close"]');
+    if (closeTarget) closeCloudImportModal();
+  });
+}
+
 if (typeof document !== 'undefined') {
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    if (cloudImportModal && !cloudImportModal.classList.contains('hidden')) {
+      closeCloudImportModal();
+      return;
+    }
     if (deleteScenarioModal && !deleteScenarioModal.classList.contains('hidden')) {
       closeDeleteScenarioModal();
       return;
@@ -1874,7 +2194,25 @@ const ws = new WebSocket(`ws://${window.location.host}`);
 ws.addEventListener('message', (event) => {
   const message = JSON.parse(event.data);
   if (message.type === 'state') {
+    if (!localStateHydrated) {
+      const localState = loadLocalState();
+      const hasLocalData = localState.savedScenarios.length > 0 || localState.queue.length > 0;
+      Object.assign(state, message.state);
+      if (hasLocalData) {
+        state.savedScenarios = localState.savedScenarios;
+        state.queue = localState.queue;
+        localStateHydrated = true;
+        render();
+        void hydrateServerFromLocalState();
+        return;
+      }
+      localStateHydrated = true;
+      persistLocalState();
+      render();
+      return;
+    }
     Object.assign(state, message.state);
+    persistLocalState();
     render();
     return;
   }

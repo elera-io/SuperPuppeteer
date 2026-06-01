@@ -126,6 +126,7 @@
           </div>
           <div class="button-row">
             <button id="syncScenariosBtn" class="primary" title="Envia para a nuvem apenas os casos pendentes">Sincronizar Casos</button>
+            <button id="importCloudScenariosBtn" title="Busca casos no PostgreSQL remoto para importar na base local">Importar Casos da Nuvem</button>
             <button id="exportScenariosBtn" title="Exporta todos os cenários salvos como JSON">Exportar cenários</button>
             <button id="importScenariosBtn" title="Importa cenários a partir de um arquivo JSON">Importar cenários</button>
             <input id="importScenariosInput" type="file" accept="application/json" hidden />
@@ -321,6 +322,30 @@
               <button id="deleteScenarioLocal" type="button">Remover apenas local</button>
               <button id="deleteScenarioCloud" class="danger" type="button">Remover local e nuvem</button>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal hidden" id="cloudImportModal" aria-hidden="true">
+        <div class="modal-backdrop" data-action="close"></div>
+        <div class="modal-card">
+          <div class="modal-header">
+            <div>
+              <h2>Importar Casos da Nuvem</h2>
+              <p class="hint" id="cloudImportStatus">Selecione os casos do PostgreSQL remoto para trazer para esta máquina.</p>
+            </div>
+            <button id="cloudImportClose" type="button">Fechar</button>
+          </div>
+          <div class="modal-body">
+            <div class="button-row cloud-import-tools">
+              <button id="cloudImportRefresh" type="button">Atualizar lista</button>
+              <button id="cloudImportSelectAll" type="button">Selecionar disponíveis</button>
+            </div>
+            <div id="cloudImportList" class="list cloud-import-list"></div>
+          </div>
+          <div class="modal-actions modal-actions-spread">
+            <button id="cloudImportCancel" type="button">Cancelar</button>
+            <button id="cloudImportConfirm" class="primary" type="button">Importar selecionados</button>
           </div>
         </div>
       </div>
