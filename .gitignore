@@ -4,6 +4,7 @@ node_modules/
 # Dados locais da aplicacao
 .data/
 .user-data/
+.env
 
 # Metadados locais
 .sfdx/

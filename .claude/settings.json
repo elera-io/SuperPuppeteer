@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc -l /c/GIT/SuperPuppeteer/public/*.js /c/GIT/SuperPuppeteer/public/*.css /c/GIT/SuperPuppeteer/server.js)",
+      "Bash(grep -n \"server.listen\\\\|app.get.*/$\\\\|app.post.*/$\" /c/GIT/SuperPuppeteer/server.js)"
+    ]
+  }
+}

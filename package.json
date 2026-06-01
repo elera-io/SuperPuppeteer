@@ -4,6 +4,9 @@
   "description": "",
   "main": "server.js",
   "scripts": {
+    "db:start": "/usr/lib/postgresql/16/bin/pg_ctl -D .data/postgres -l .data/postgres.log -o \"-p 5433 -c listen_addresses=127.0.0.1 -c unix_socket_directories=/tmp\" start",
+    "db:stop": "/usr/lib/postgresql/16/bin/pg_ctl -D .data/postgres stop",
+    "db:status": "/usr/lib/postgresql/16/bin/pg_ctl -D .data/postgres status",
     "start": "node server.js"
   },
   "keywords": [],
@@ -12,6 +15,7 @@
   "type": "commonjs",
   "dependencies": {
     "express": "^5.2.1",
+    "pg": "^8.21.0",
     "puppeteer": "^24.39.1",
     "ws": "^8.19.0"
   }

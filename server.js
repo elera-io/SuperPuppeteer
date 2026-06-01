@@ -2,10 +2,35 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
-const { execFile } = require('child_process');
+const { exec, execFile } = require('child_process');
 const { promisify } = require('util');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer');
+const { Pool } = require('pg');
+
+const loadDotEnv = () => {
+  const envPath = path.join(__dirname, '.env');
+  if (!fs.existsSync(envPath)) return;
+  const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) return;
+    const separatorIndex = trimmed.indexOf('=');
+    if (separatorIndex <= 0) return;
+    const key = trimmed.slice(0, separatorIndex).trim();
+    let value = trimmed.slice(separatorIndex + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (!Object.prototype.hasOwnProperty.call(process.env, key)) {
+      process.env[key] = value;
+    }
+  });
+};
+loadDotEnv();
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -13,6 +38,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
+const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 const PROFILE_DIR = path.join(__dirname, '.user-data', 'chrome-profile');
@@ -20,24 +46,48 @@ const DATA_DIR = path.join(__dirname, '.data');
 const SCENARIOS_FILE = path.join(DATA_DIR, 'scenarios.json');
 const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings');
 const RECORDINGS_INDEX_FILE = path.join(DATA_DIR, 'recordings-index.json');
+const DATABASE_URL =
+  typeof process.env.DATABASE_URL === 'string' ? process.env.DATABASE_URL.trim() : '';
+const POSTGRES_TABLE =
+  typeof process.env.POSTGRES_SCENARIOS_TABLE === 'string' && process.env.POSTGRES_SCENARIOS_TABLE.trim()
+    ? process.env.POSTGRES_SCENARIOS_TABLE.trim()
+    : 'superpuppeteer_scenarios';
 const SALESFORCE_TARGET_ORG = process.env.SALESFORCE_TARGET_ORG || 'Elera';
 const SALESFORCE_ACCEPTANCE_OBJECT = 'agf__ADM_Acceptance_Criterion__c';
+const SALESFORCE_WORK_OBJECT = 'agf__ADM_Work__c';
 const SALESFORCE_ACCEPTANCE_FIELDS =
-  'Id, Name, agf__Status__c, agf__Description__c, agf__Work__r.Project__r.Name, agf__Work__r.Name';
+  'Id, Name, agf__Status__c, agf__Description__c, agf__Work__c, agf__Work__r.Project__r.Name, agf__Work__r.Name, agf__Work__r.NomeCliente__c';
+const SALESFORCE_FAILED_WORK_TEMPLATE_FIELDS =
+  'Id, Name, agf__Work__c, agf__Work__r.Name, agf__Work__r.Project__r.Name, agf__Work__r.NomeCliente__c, agf__Work__r.agf__Product_Tag__c, agf__Work__r.agf__Product_Tag__r.Name, agf__Work__r.agf__Scrum_Team__c, agf__Work__r.agf__Scrum_Team__r.Name, agf__Work__r.agf__Found_in_Build__c, agf__Work__r.agf__Found_in_Build__r.Name, agf__Work__r.agf__Assignee__c, agf__Work__r.agf__Assignee__r.Name, agf__Work__r.agf__Product_Owner__c, agf__Work__r.agf__Product_Owner__r.Name';
 const SALESFORCE_ID_PATTERN = /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/;
 const SALESFORCE_ACCEPTANCE_STATUS_VALUES = new Set(['Passed', 'Failed']);
-const BROWSER_VIEWPORT = {
-  width: 1920,
-  height: 1080,
-  deviceScaleFactor: 1,
-};
+const SALESFORCE_FAILED_WORK_PRIORITY_VALUES = new Set(['P0', 'P1', 'P2']);
+const SALESFORCE_FAILED_WORK_RECORD_TYPE_ID = '0123x000001i4wfAAA';
+const SALESFORCE_FAILED_WORK_COLUMN_ID = 'a0rbJ00000XCel7QAD';
+const SALESFORCE_FAILED_WORK_FOUND_IN_BUILD_ID = 'a0i3x00000vhbUeAAI';
 const SESSION_FILES = [
   path.join(PROFILE_DIR, 'Default', 'Current Session'),
   path.join(PROFILE_DIR, 'Default', 'Current Tabs'),
   path.join(PROFILE_DIR, 'Default', 'Last Session'),
   path.join(PROFILE_DIR, 'Default', 'Last Tabs'),
 ];
-
+const BROWSER_VIEWPORT = {
+  width: 1920,
+  height: 1080,
+  deviceScaleFactor: 1,
+};
+const SALESFORCE_CLI_MAX_BUFFER = 1024 * 1024;
+const SALESFORCE_CLI_CANDIDATES = (() => {
+  const values = [];
+  const localAppData =
+    typeof process.env.LOCALAPPDATA === 'string' ? process.env.LOCALAPPDATA.trim() : '';
+  if (localAppData) {
+    values.push(path.join(localAppData, 'sf', 'client', 'bin', 'sf.cmd'));
+  }
+  values.push('C:\\Program Files\\sf\\bin\\sf.cmd');
+  values.push('C:\\Program Files (x86)\\sf\\bin\\sf.cmd');
+  return values;
+})();
 const state = {
   status: 'Idle',
   eventCount: 0,
@@ -55,6 +105,23 @@ const state = {
   page: null,
   recordingEnabled: false,
 };
+
+const postgresConfigured = Boolean(
+  DATABASE_URL ||
+    process.env.PGHOST ||
+    process.env.PGDATABASE ||
+    process.env.PGUSER ||
+    process.env.PGPASSWORD
+);
+const postgresPool = postgresConfigured
+  ? new Pool(DATABASE_URL ? { connectionString: DATABASE_URL } : undefined)
+  : null;
+const quoteSqlIdentifier = (value) =>
+  `"${String(value || '').replace(/"/g, '""')}"`;
+const postgresScenarioTableSql = POSTGRES_TABLE
+  .split('.')
+  .map((part) => quoteSqlIdentifier(part.trim() || 'superpuppeteer_scenarios'))
+  .join('.');
 
 const ensureDataDir = () => {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -82,12 +149,97 @@ const normalizeOptionalText = (value) => {
   const normalized = value.replace(/\r\n/g, '\n');
   return normalized.length ? normalized : null;
 };
+const normalizeSyncMetadata = (item = {}) => ({
+  CasoSincronizado: asBoolean(item.CasoSincronizado),
+  cloudId: normalizeOptionalString(item.cloudId || item.CloudId || item.nuvemId),
+  syncedAt: normalizeOptionalString(item.syncedAt || item.SyncedAt),
+  syncError: normalizeOptionalString(item.syncError || item.SyncError),
+});
+const markScenarioPendingSync = (scenario, syncError = null) => {
+  if (!scenario) return;
+  scenario.CasoSincronizado = false;
+  scenario.syncedAt = null;
+  scenario.syncError = normalizeOptionalString(syncError);
+};
+const markScenarioSynced = (scenario, result = {}) => {
+  if (!scenario) return;
+  scenario.CasoSincronizado = true;
+  scenario.cloudId = normalizeOptionalString(result.cloudId) || scenario.cloudId || scenario.id;
+  scenario.syncedAt = normalizeOptionalString(result.syncedAt) || nowIso();
+  scenario.syncError = null;
+};
+const quoteWindowsShellArg = (value) => {
+  const normalized = String(value ?? '');
+  return `"${normalized.replace(/"/g, '""')}"`;
+};
+const resolveSalesforceCliCommand = () => {
+  if (process.platform !== 'win32') return 'sf';
+  for (const candidate of SALESFORCE_CLI_CANDIDATES) {
+    try {
+      if (candidate && fs.existsSync(candidate)) {
+        return candidate;
+      }
+    } catch (error) {
+      // ignore filesystem lookup errors and continue with the next candidate
+    }
+  }
+  return 'sf';
+};
+const runSalesforceCli = async (args, options = {}) => {
+  const command = resolveSalesforceCliCommand();
+  const resolvedArgs = Array.isArray(args) ? args : [];
+  const resolvedOptions = {
+    maxBuffer: SALESFORCE_CLI_MAX_BUFFER,
+    windowsHide: true,
+    env: {
+      ...process.env,
+      SF_DISABLE_LOG_FILE: process.env.SF_DISABLE_LOG_FILE || 'true',
+      SF_LOG_LEVEL: process.env.SF_LOG_LEVEL || 'error',
+      NO_COLOR: process.env.NO_COLOR || '1',
+      CI: process.env.CI || '1',
+    },
+    ...options,
+  };
+
+  if (process.platform === 'win32') {
+    const commandLine = [quoteWindowsShellArg(command), ...resolvedArgs.map(quoteWindowsShellArg)].join(' ');
+    return execAsync(commandLine, resolvedOptions);
+  }
+
+  return execFileAsync(command, resolvedArgs, resolvedOptions);
+};
 const normalizeAcceptanceStatus = (value) => {
   if (typeof value !== 'string') return null;
   const normalized = value.trim().toLowerCase();
   if (normalized === 'passed') return 'Passed';
   if (normalized === 'failed') return 'Failed';
   return null;
+};
+const normalizeFailedWorkPriority = (value) => {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toUpperCase();
+  if (SALESFORCE_FAILED_WORK_PRIORITY_VALUES.has(normalized)) return normalized;
+  return null;
+};
+const requiredTestCaseMetadata = [
+  { key: 'clientName', label: 'Cliente (agf__Work__r.NomeCliente__c)' },
+  { key: 'projectName', label: 'Projeto (agf__Work__r.Project__r.Name)' },
+  { key: 'workName', label: 'Work (agf__Work__r.Name)' },
+  { key: 'workId', label: 'Work ID (agf__Work__c)' },
+];
+const validateTestCaseMetadataForScenarioSave = (testCase, testCaseId) => {
+  if (!testCase || typeof testCase !== 'object') return;
+  const missingFields = requiredTestCaseMetadata
+    .filter(({ key }) => !normalizeOptionalString(testCase[key]))
+    .map(({ label }) => label);
+  if (!missingFields.length) return;
+  const error = new Error(
+    `Caso de teste ${testCaseId} não pode ser salvo. Faltam dados obrigatórios no Salesforce: ${missingFields.join(
+      ', '
+    )}. Atualize esses campos e tente novamente.`
+  );
+  error.statusCode = 400;
+  throw error;
 };
 const extractScenarioTestCase = (item) => {
   const id = normalizeOptionalString(
@@ -97,11 +249,24 @@ const extractScenarioTestCase = (item) => {
   return {
     id,
     name: normalizeOptionalString(item?.testCase?.name || item?.testCase?.Name || item?.testCaseName),
+    clientName: normalizeOptionalString(
+      item?.testCase?.clientName ||
+        item?.testCase?.client ||
+        item?.testCase?.NomeCliente__c ||
+        item?.testCase?.NomeCliente__C ||
+        item?.testCaseClientName
+    ),
     projectName: normalizeOptionalString(
       item?.testCase?.projectName || item?.testCase?.project || item?.testCaseProjectName
     ),
     workName: normalizeOptionalString(
       item?.testCase?.workName || item?.testCase?.work || item?.testCaseWorkName
+    ),
+    workId: normalizeOptionalString(
+      item?.testCase?.workId ||
+        item?.testCase?.WorkId ||
+        item?.testCase?.agf__Work__c ||
+        item?.testCaseWorkId
     ),
     status: normalizeAcceptanceStatus(
       item?.testCase?.status ||
@@ -128,11 +293,15 @@ const fetchTestCaseFromSalesforce = async (testCaseId) => {
 
   const query = buildAcceptanceCriterionQuery(testCaseId);
   try {
-    const { stdout } = await execFileAsync(
-      'sf',
-      ['data', 'query', '--query', query, '--target-org', SALESFORCE_TARGET_ORG, '--json'],
-      { maxBuffer: 1024 * 1024 }
-    );
+    const { stdout } = await runSalesforceCli([
+      'data',
+      'query',
+      '--query',
+      query,
+      '--target-org',
+      SALESFORCE_TARGET_ORG,
+      '--json',
+    ]);
     const payload = JSON.parse(stdout || '{}');
     const records = Array.isArray(payload?.result?.records) ? payload.result.records : [];
     const record = records[0];
@@ -147,8 +316,12 @@ const fetchTestCaseFromSalesforce = async (testCaseId) => {
     return {
       id: normalizeOptionalString(record.Id) || testCaseId,
       name: normalizeOptionalString(record.Name),
+      clientName: normalizeOptionalString(
+        record.agf__Work__r?.NomeCliente__c || record.agf__Work__r?.NomeCliente__C
+      ),
       projectName: normalizeOptionalString(record.agf__Work__r?.Project__r?.Name),
       workName: normalizeOptionalString(record.agf__Work__r?.Name),
+      workId: normalizeOptionalString(record.agf__Work__c),
       status: normalizeAcceptanceStatus(record.agf__Status__c),
       description: normalizeOptionalText(record.agf__Description__c),
     };
@@ -166,11 +339,14 @@ const fetchTestCaseFromSalesforce = async (testCaseId) => {
 };
 const getSalesforceConnection = async () => {
   try {
-    const { stdout } = await execFileAsync(
-      'sf',
-      ['org', 'display', '--target-org', SALESFORCE_TARGET_ORG, '--verbose', '--json'],
-      { maxBuffer: 1024 * 1024 }
-    );
+    const { stdout } = await runSalesforceCli([
+      'org',
+      'display',
+      '--target-org',
+      SALESFORCE_TARGET_ORG,
+      '--verbose',
+      '--json',
+    ]);
     const payload = JSON.parse(stdout || '{}');
     const result = payload?.result || {};
     const accessToken = normalizeOptionalString(result.accessToken);
@@ -271,11 +447,219 @@ const updateAcceptanceCriterionStatus = async (testCaseId, status) => {
   );
   return normalizedStatus;
 };
+const buildFailedWorkTemplateQuery = (testCaseId) =>
+  `SELECT ${SALESFORCE_FAILED_WORK_TEMPLATE_FIELDS} FROM ${SALESFORCE_ACCEPTANCE_OBJECT} WHERE Id = '${testCaseId}'`;
+const fetchFailedWorkTemplateFromSalesforce = async (testCaseId) => {
+  if (!SALESFORCE_ID_PATTERN.test(testCaseId)) {
+    const error = new Error('ID do caso de teste inválido. Use um ID Salesforce com 15 ou 18 caracteres.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const query = buildFailedWorkTemplateQuery(testCaseId);
+  try {
+    const { stdout } = await runSalesforceCli([
+      'data',
+      'query',
+      '--query',
+      query,
+      '--target-org',
+      SALESFORCE_TARGET_ORG,
+      '--json',
+    ]);
+    const payload = JSON.parse(stdout || '{}');
+    const records = Array.isArray(payload?.result?.records) ? payload.result.records : [];
+    const record = records[0];
+    if (!record) {
+      const error = new Error(
+        `Caso de teste ${testCaseId} não encontrado no org ${SALESFORCE_TARGET_ORG}.`
+      );
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const workFoundInBuildId = normalizeOptionalString(record.agf__Work__r?.agf__Found_in_Build__c);
+    const workFoundInBuildName = normalizeOptionalString(record.agf__Work__r?.agf__Found_in_Build__r?.Name);
+    const template = {
+      testCaseId: normalizeOptionalString(record.Id) || testCaseId,
+      testCaseName: normalizeOptionalString(record.Name),
+      workId: normalizeOptionalString(record.agf__Work__c),
+      workName: normalizeOptionalString(record.agf__Work__r?.Name),
+      clientName: normalizeOptionalString(
+        record.agf__Work__r?.NomeCliente__c || record.agf__Work__r?.NomeCliente__C
+      ),
+      projectName: normalizeOptionalString(record.agf__Work__r?.Project__r?.Name),
+      productTagId: normalizeOptionalString(record.agf__Work__r?.agf__Product_Tag__c),
+      productTagName: normalizeOptionalString(record.agf__Work__r?.agf__Product_Tag__r?.Name),
+      scrumTeamId: normalizeOptionalString(record.agf__Work__r?.agf__Scrum_Team__c),
+      scrumTeamName: normalizeOptionalString(record.agf__Work__r?.agf__Scrum_Team__r?.Name),
+      foundInBuildId: SALESFORCE_FAILED_WORK_FOUND_IN_BUILD_ID,
+      foundInBuildName:
+        workFoundInBuildId === SALESFORCE_FAILED_WORK_FOUND_IN_BUILD_ID ? workFoundInBuildName : null,
+      assigneeId: normalizeOptionalString(record.agf__Work__r?.agf__Assignee__c),
+      assigneeName: normalizeOptionalString(record.agf__Work__r?.agf__Assignee__r?.Name),
+      productOwnerId: normalizeOptionalString(record.agf__Work__r?.agf__Product_Owner__c),
+      productOwnerName: normalizeOptionalString(record.agf__Work__r?.agf__Product_Owner__r?.Name),
+    };
+    const suggestedWorkName = truncateText(
+      [template.workName, template.testCaseName].filter(Boolean).join(' - '),
+      255
+    );
+    template.suggestedWorkName = suggestedWorkName || null;
+
+    if (!template.workId) {
+      const error = new Error(
+        `O caso de teste ${testCaseId} não possui Work vinculada para preencher agf__Related_Work__c.`
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+
+    return template;
+  } catch (error) {
+    if (error.statusCode) throw error;
+    const stderr = normalizeOptionalString(error.stderr);
+    const stdout = normalizeOptionalString(error.stdout);
+    const detail = stderr || stdout || normalizeOptionalString(error.message) || 'Erro desconhecido.';
+    const wrappedError = new Error(
+      `Falha ao consultar os dados da Work no Salesforce para o caso ${testCaseId}: ${detail}`
+    );
+    wrappedError.statusCode = error.code === 'ENOENT' ? 500 : 502;
+    throw wrappedError;
+  }
+};
+const truncateText = (value, limit) => {
+  const text = String(value || '');
+  if (!Number.isInteger(limit) || limit <= 0) return text;
+  return text.length > limit ? text.slice(0, limit) : text;
+};
+const buildSuggestedFailedWorkName = (scenario, template) => {
+  const workName =
+    normalizeOptionalString(template?.workName) || normalizeOptionalString(scenario?.testCase?.workName);
+  const caseName =
+    normalizeOptionalString(scenario?.testCase?.name) ||
+    normalizeOptionalString(template?.testCaseName) ||
+    normalizeOptionalString(scenario?.name);
+  const joined = [workName, caseName].filter(Boolean).join(' - ');
+  if (joined) return truncateText(joined, 255);
+  if (workName) return truncateText(workName, 255);
+  if (caseName) return truncateText(caseName, 255);
+  return 'Nova Work relacionada';
+};
+const salesforceErrorMessage = (payload, fallback = '') => {
+  if (Array.isArray(payload)) {
+    const detail = payload
+      .map((item) => normalizeOptionalString(item?.message))
+      .filter(Boolean)
+      .join(' | ');
+    return detail || fallback;
+  }
+  if (payload && typeof payload === 'object') {
+    return (
+      normalizeOptionalString(payload.message) ||
+      normalizeOptionalString(payload.error) ||
+      normalizeOptionalString(payload[0]?.message) ||
+      fallback
+    );
+  }
+  return fallback;
+};
+const createRelatedFailedWorkRecord = async ({ scenario, template, name, description, priority }) => {
+  const normalizedPriority = normalizeFailedWorkPriority(priority);
+  if (!normalizedPriority) {
+    const error = new Error('Prioridade inválida. Use P0, P1 ou P2.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const rawName = typeof name === 'string' ? name.trim() : '';
+  const normalizedName = truncateText(rawName || buildSuggestedFailedWorkName(scenario, template), 255).trim();
+  if (!normalizedName) {
+    const error = new Error('Informe o assunto da nova Work.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const rawDescription = typeof description === 'string' ? description.replace(/\r\n/g, '\n') : '';
+  if (!rawDescription.trim()) {
+    const error = new Error('Descrição obrigatória para criar a Work relacionada.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const relatedWorkId = normalizeOptionalString(template?.workId);
+  if (!relatedWorkId) {
+    const error = new Error('Work vinculada não encontrada para preencher agf__Related_Work__c.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const payload = {
+    agf__Subject__c: normalizedName,
+    agf__Details_and_Steps_to_Reproduce__c: rawDescription,
+    agf__Status__c: 'Waiting',
+    agf__Priority__c: normalizedPriority,
+    agf__Related_Work__c: relatedWorkId,
+    agf__Found_in_Build__c: SALESFORCE_FAILED_WORK_FOUND_IN_BUILD_ID,
+    agf__Column__c: SALESFORCE_FAILED_WORK_COLUMN_ID,
+    RecordTypeId: SALESFORCE_FAILED_WORK_RECORD_TYPE_ID,
+  };
+  const optionalFields = {
+    agf__Product_Tag__c: normalizeOptionalString(template?.productTagId),
+    agf__Scrum_Team__c: normalizeOptionalString(template?.scrumTeamId),
+    agf__Assignee__c: normalizeOptionalString(template?.assigneeId),
+    agf__Product_Owner__c: normalizeOptionalString(template?.productOwnerId),
+  };
+  Object.entries(optionalFields).forEach(([field, value]) => {
+    if (value) payload[field] = value;
+  });
+
+  const { accessToken, instanceUrl, apiVersion } = await getSalesforceConnection();
+  const endpoint = `${instanceUrl}/services/data/v${apiVersion}/sobjects/${encodeURIComponent(
+    SALESFORCE_WORK_OBJECT
+  )}`;
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail = salesforceErrorMessage(body, `HTTP ${response.status}`);
+      const error = new Error(`Falha ao criar Work relacionada no Salesforce: ${detail}`);
+      error.statusCode = response.status >= 500 ? 502 : response.status;
+      throw error;
+    }
+
+    if (body && typeof body === 'object' && body.success === false) {
+      const detail = salesforceErrorMessage(body.errors, 'Salesforce retornou falha na criação.');
+      const error = new Error(`Falha ao criar Work relacionada no Salesforce: ${detail}`);
+      error.statusCode = 502;
+      throw error;
+    }
+
+    return {
+      id: normalizeOptionalString(body?.id),
+      name: normalizedName,
+      subject: payload.agf__Subject__c,
+      priority: normalizedPriority,
+      relatedWorkId,
+    };
+  } catch (error) {
+    if (error.statusCode) throw error;
+    const detail = normalizeOptionalString(error.message) || 'Erro desconhecido.';
+    const wrappedError = new Error(`Falha ao criar Work relacionada no Salesforce: ${detail}`);
+    wrappedError.statusCode = 502;
+    throw wrappedError;
+  }
+};
 const syncTestCaseDescription = (testCaseId, description) => {
   const normalizedDescription = normalizeOptionalText(description);
   state.savedScenarios.forEach((scenario) => {
     if (!scenario?.testCase || scenario.testCase.id !== testCaseId) return;
     scenario.testCase.description = normalizedDescription;
+    markScenarioPendingSync(scenario);
   });
   return normalizedDescription;
 };
@@ -284,6 +668,7 @@ const syncTestCaseStatus = (testCaseId, status) => {
   state.savedScenarios.forEach((scenario) => {
     if (!scenario?.testCase || scenario.testCase.id !== testCaseId) return;
     scenario.testCase.status = normalizedStatus;
+    markScenarioPendingSync(scenario);
   });
   return normalizedStatus;
 };
@@ -308,6 +693,7 @@ const loadScenarios = () => {
         duration: item.duration || 0,
         startUrl: item.startUrl || null,
         testCase: extractScenarioTestCase(item),
+        ...normalizeSyncMetadata(item),
       }));
     if (Array.isArray(queueList)) {
       state.queue = queueList
@@ -339,6 +725,188 @@ const saveScenarios = () => {
       2
     )
   );
+};
+
+const cloneScenarioForCloud = (scenario) => {
+  const payload = JSON.parse(JSON.stringify(scenario || {}));
+  payload.localId = scenario?.id || payload.localId || null;
+  payload.CasoSincronizado = asBoolean(scenario?.CasoSincronizado);
+  return payload;
+};
+
+let postgresSchemaReady = false;
+const ensurePostgresConfigured = () => {
+  if (postgresPool) return;
+  const error = new Error(
+    'PostgreSQL não configurado. Defina DATABASE_URL ou PGHOST/PGDATABASE/PGUSER/PGPASSWORD.'
+  );
+  error.statusCode = 500;
+  throw error;
+};
+const ensurePostgresSchema = async () => {
+  ensurePostgresConfigured();
+  if (postgresSchemaReady) return;
+  await postgresPool.query(`
+    CREATE TABLE IF NOT EXISTS ${postgresScenarioTableSql} (
+      cloud_id TEXT PRIMARY KEY,
+      local_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      test_case_id TEXT,
+      client_name TEXT,
+      project_name TEXT,
+      work_name TEXT,
+      payload JSONB NOT NULL,
+      created_at TIMESTAMPTZ,
+      synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await postgresPool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier(`${POSTGRES_TABLE.replace(/\W+/g, '_')}_local_id_idx`)}
+    ON ${postgresScenarioTableSql} (local_id)
+  `);
+  postgresSchemaReady = true;
+};
+const syncScenarioToPostgres = async (scenario) => {
+  await ensurePostgresSchema();
+  const cloudId = normalizeOptionalString(scenario.cloudId) || `cloud_${scenario.id}`;
+  const payload = {
+    ...cloneScenarioForCloud(scenario),
+    cloudId,
+    CasoSincronizado: true,
+    syncedAt: nowIso(),
+  };
+  const result = await postgresPool.query(
+    `
+      INSERT INTO ${postgresScenarioTableSql} (
+        cloud_id,
+        local_id,
+        name,
+        test_case_id,
+        client_name,
+        project_name,
+        work_name,
+        payload,
+        created_at,
+        synced_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, NOW(), NOW())
+      ON CONFLICT (cloud_id)
+      DO UPDATE SET
+        local_id = EXCLUDED.local_id,
+        name = EXCLUDED.name,
+        test_case_id = EXCLUDED.test_case_id,
+        client_name = EXCLUDED.client_name,
+        project_name = EXCLUDED.project_name,
+        work_name = EXCLUDED.work_name,
+        payload = EXCLUDED.payload,
+        created_at = EXCLUDED.created_at,
+        synced_at = NOW(),
+        updated_at = NOW()
+      RETURNING cloud_id, synced_at
+    `,
+    [
+      cloudId,
+      scenario.id,
+      scenario.name || 'Cenário',
+      normalizeOptionalString(scenario?.testCase?.id),
+      normalizeOptionalString(scenario?.testCase?.clientName),
+      normalizeOptionalString(scenario?.testCase?.projectName),
+      normalizeOptionalString(scenario?.testCase?.workName),
+      JSON.stringify(payload),
+      scenario.createdAt || null,
+    ]
+  );
+  return {
+    cloudId: normalizeOptionalString(result.rows?.[0]?.cloud_id) || cloudId,
+    syncedAt: result.rows?.[0]?.synced_at ? new Date(result.rows[0].synced_at).toISOString() : nowIso(),
+    provider: 'postgres',
+  };
+};
+const syncScenarioToCloud = async (scenario) => syncScenarioToPostgres(scenario);
+const deleteScenarioFromPostgres = async (scenario) => {
+  await ensurePostgresSchema();
+  const cloudId = normalizeOptionalString(scenario.cloudId);
+  const params = cloudId ? [cloudId, scenario.id] : [scenario.id];
+  const condition = cloudId ? 'cloud_id = $1 OR local_id = $2' : 'local_id = $1';
+  const result = await postgresPool.query(
+    `DELETE FROM ${postgresScenarioTableSql} WHERE ${condition}`,
+    params
+  );
+  return {
+    ok: true,
+    provider: 'postgres',
+    removed: result.rowCount || 0,
+  };
+};
+const deleteScenarioFromCloud = async (scenario) => {
+  if (!scenario) return { ok: true, skipped: true };
+  if (!asBoolean(scenario.CasoSincronizado) && !normalizeOptionalString(scenario.cloudId)) {
+    return { ok: true, skipped: true };
+  }
+  return deleteScenarioFromPostgres(scenario);
+};
+const normalizeCloudScenarioRow = (row = {}) => {
+  const payload =
+    row.payload && typeof row.payload === 'object'
+      ? JSON.parse(JSON.stringify(row.payload))
+      : {};
+  const testCase = extractScenarioTestCase({
+    ...payload,
+    testCaseId: payload.testCaseId || row.test_case_id,
+    testCase: {
+      ...(payload.testCase || {}),
+      id: payload.testCase?.id || payload.testCase?.Id || row.test_case_id,
+      name: payload.testCase?.name || payload.testCase?.Name || row.name,
+      clientName: payload.testCase?.clientName || row.client_name,
+      projectName: payload.testCase?.projectName || row.project_name,
+      workName: payload.testCase?.workName || row.work_name,
+    },
+  });
+  const events = Array.isArray(payload.events) ? payload.events : [];
+  const syncedAt = row.synced_at ? new Date(row.synced_at).toISOString() : payload.syncedAt || nowIso();
+  return {
+    ...payload,
+    id: normalizeOptionalString(payload.id) || normalizeOptionalString(row.local_id) || generateId('scn'),
+    name: normalizeOptionalString(payload.name) || normalizeOptionalString(row.name) || 'Cenário',
+    createdAt: payload.createdAt || (row.created_at ? new Date(row.created_at).toISOString() : syncedAt),
+    events,
+    duration: Number(payload.duration) || eventsDuration(events, 0),
+    startUrl: payload.startUrl || null,
+    testCase,
+    CasoSincronizado: true,
+    cloudId: normalizeOptionalString(row.cloud_id) || normalizeOptionalString(payload.cloudId),
+    syncedAt,
+    syncError: null,
+  };
+};
+const listCloudScenariosFromPostgres = async (limit = 200) => {
+  await ensurePostgresSchema();
+  const resolvedLimit = Math.min(Math.max(Number(limit) || 200, 1), 1000);
+  const result = await postgresPool.query(
+    `
+      SELECT
+        cloud_id,
+        local_id,
+        name,
+        test_case_id,
+        client_name,
+        project_name,
+        work_name,
+        payload,
+        created_at,
+        synced_at,
+        updated_at
+      FROM ${postgresScenarioTableSql}
+      ORDER BY synced_at DESC, updated_at DESC
+      LIMIT $1
+    `,
+    [resolvedLimit]
+  );
+  return result.rows
+    .map((row) => normalizeCloudScenarioRow(row))
+    .filter((scenario) => Array.isArray(scenario.events));
 };
 
 const normalizeRecordingsIndexEntry = (entry) => {
@@ -488,13 +1056,21 @@ const scenarioSummary = (scenario) => ({
   name: scenario.name,
   createdAt: scenario.createdAt,
   duration: scenario.duration,
+  startUrl: scenario.startUrl || null,
   eventCount: scenario.events.length,
+  events: Array.isArray(scenario.events) ? JSON.parse(JSON.stringify(scenario.events)) : [],
+  CasoSincronizado: asBoolean(scenario.CasoSincronizado),
+  cloudId: scenario.cloudId || null,
+  syncedAt: scenario.syncedAt || null,
+  syncError: scenario.syncError || null,
   testCase: scenario.testCase
     ? {
         id: scenario.testCase.id,
         name: scenario.testCase.name || null,
+        clientName: scenario.testCase.clientName || null,
         projectName: scenario.testCase.projectName || null,
         workName: scenario.testCase.workName || null,
+        workId: scenario.testCase.workId || null,
         status: scenario.testCase.status || null,
         description: scenario.testCase.description || null,
       }
@@ -1407,6 +1983,90 @@ const attachBrowserListeners = (browser) => {
   browser.on('targetchanged', handleTarget);
 };
 
+const chromeProfileLockPaths = () => [
+  path.join(PROFILE_DIR, 'SingletonLock'),
+  path.join(PROFILE_DIR, 'SingletonCookie'),
+  path.join(PROFILE_DIR, 'SingletonSocket'),
+  path.join(PROFILE_DIR, 'DevToolsActivePort'),
+];
+
+const readChromeProfileOwnerPid = () => {
+  try {
+    const lockTarget = fs.readlinkSync(path.join(PROFILE_DIR, 'SingletonLock'));
+    const match = String(lockTarget || '').match(/-(\d+)$/);
+    const pid = match ? Number(match[1]) : NaN;
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch (error) {
+    return null;
+  }
+};
+
+const processIsAlive = (pid) => {
+  if (!pid || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return false;
+  }
+};
+
+const waitForProcessExit = async (pid, timeoutMs = 2400) => {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (!processIsAlive(pid)) return true;
+    await sleep(120);
+  }
+  return !processIsAlive(pid);
+};
+
+const clearChromeProfileLocks = () => {
+  chromeProfileLockPaths().forEach((filePath) => {
+    try {
+      fs.rmSync(filePath, { force: true });
+    } catch (error) {
+      // ignore stale lock cleanup errors
+    }
+  });
+};
+
+const closeStaleChromeProfileOwner = async () => {
+  const pid = readChromeProfileOwnerPid();
+  if (pid && processIsAlive(pid)) {
+    process.kill(pid, 'SIGTERM');
+    const exited = await waitForProcessExit(pid);
+    if (!exited && processIsAlive(pid)) {
+      process.kill(pid, 'SIGKILL');
+      await waitForProcessExit(pid, 1200);
+    }
+  }
+  clearChromeProfileLocks();
+};
+
+const isChromeProfileInUseError = (error) => {
+  const message = String(error?.message || error || '');
+  return (
+    message.includes('browser is already running') ||
+    message.includes('userDataDir') ||
+    message.includes('SingletonLock')
+  );
+};
+
+const launchManagedBrowser = async () =>
+  puppeteer.launch({
+    headless: false,
+    userDataDir: PROFILE_DIR,
+    defaultViewport: BROWSER_VIEWPORT,
+    args: [
+      `--window-size=${BROWSER_VIEWPORT.width},${BROWSER_VIEWPORT.height}`,
+      '--force-device-scale-factor=1',
+      '--high-dpi-support=1',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-session-crashed-bubble',
+    ],
+  });
+
 const ensureBrowser = async () => {
   if (state.browser && state.page && !state.page.isClosed()) {
     attachBrowserListeners(state.browser);
@@ -1422,19 +2082,14 @@ const ensureBrowser = async () => {
     }
   });
 
-  const browser = await puppeteer.launch({
-    headless: false,
-    userDataDir: PROFILE_DIR,
-    defaultViewport: BROWSER_VIEWPORT,
-    args: [
-      `--window-size=${BROWSER_VIEWPORT.width},${BROWSER_VIEWPORT.height}`,
-      '--force-device-scale-factor=1',
-      '--high-dpi-support=1',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-session-crashed-bubble',
-    ],
-  });
+  let browser;
+  try {
+    browser = await launchManagedBrowser();
+  } catch (error) {
+    if (!isChromeProfileInUseError(error)) throw error;
+    await closeStaleChromeProfileOwner();
+    browser = await launchManagedBrowser();
+  }
 
   state.browser = browser;
 
@@ -2436,6 +3091,7 @@ app.post('/api/recording/stop', async (req, res) => {
         if (!scenario.startUrl && state.currentRecording.startUrl) {
           scenario.startUrl = state.currentRecording.startUrl;
         }
+        markScenarioPendingSync(scenario);
         syncQueueScenario(scenario);
         saveScenarios();
       }
@@ -2479,6 +3135,9 @@ app.post('/api/scenarios/save', async (req, res) => {
 
   try {
     const testCase = testCaseId ? await fetchTestCaseFromSalesforce(testCaseId) : null;
+    if (testCaseId) {
+      validateTestCaseMetadataForScenarioSave(testCase, testCaseId);
+    }
     const scenario = {
       id: generateId('scn'),
       name: name || testCase?.name || `Cenário ${state.savedScenarios.length + 1}`,
@@ -2487,6 +3146,10 @@ app.post('/api/scenarios/save', async (req, res) => {
       duration: state.lastRecording.duration,
       startUrl: state.lastRecording.startUrl,
       testCase,
+      CasoSincronizado: false,
+      cloudId: null,
+      syncedAt: null,
+      syncError: null,
     };
     state.savedScenarios.push(scenario);
     saveScenarios();
@@ -2495,6 +3158,101 @@ app.post('/api/scenarios/save', async (req, res) => {
   } catch (error) {
     return res.status(Number(error.statusCode) || 500).json({ error: error.message });
   }
+});
+
+app.post('/api/scenarios/sync', async (req, res) => {
+  const pendingScenarios = state.savedScenarios.filter((scenario) => !asBoolean(scenario.CasoSincronizado));
+  const results = [];
+
+  for (const scenario of pendingScenarios) {
+    try {
+      const result = await syncScenarioToCloud(scenario);
+      markScenarioSynced(scenario, result);
+      results.push({
+        id: scenario.id,
+        name: scenario.name,
+        ok: true,
+        cloudId: scenario.cloudId,
+        provider: result.provider,
+      });
+    } catch (error) {
+      const detail = normalizeOptionalString(error.message) || 'Falha desconhecida na sincronização.';
+      scenario.CasoSincronizado = false;
+      scenario.syncError = detail;
+      results.push({
+        id: scenario.id,
+        name: scenario.name,
+        ok: false,
+        error: detail,
+      });
+    }
+  }
+
+  saveScenarios();
+  broadcastState();
+
+  const synced = results.filter((item) => item.ok).length;
+  const failed = results.filter((item) => !item.ok).length;
+  return res.json({
+    ok: failed === 0,
+    pending: pendingScenarios.length,
+    synced,
+    failed,
+    provider: 'postgres',
+    results,
+  });
+});
+
+app.get('/api/scenarios/cloud', async (req, res) => {
+  try {
+    const scenarios = await listCloudScenariosFromPostgres(req.query?.limit);
+    return res.json({
+      ok: true,
+      provider: 'postgres',
+      scenarios: scenarios.map((scenario) => scenarioSummary(scenario)),
+    });
+  } catch (error) {
+    return res.status(Number(error.statusCode) || 502).json({
+      error: error.message || 'Falha ao carregar casos da nuvem.',
+    });
+  }
+});
+
+app.post('/api/local-state/hydrate', async (req, res) => {
+  const scenarios = Array.isArray(req.body?.savedScenarios) ? req.body.savedScenarios : [];
+  const queue = Array.isArray(req.body?.queue) ? req.body.queue : [];
+
+  state.savedScenarios = scenarios
+    .filter((item) => item && Array.isArray(item.events))
+    .map((item, index) => ({
+      id: item.id || generateId('scn'),
+      name: item.name || `Cenário ${index + 1}`,
+      createdAt: item.createdAt || nowIso(),
+      events: cloneEvents(item.events || []),
+      duration: item.duration || eventsDuration(item.events, 0),
+      startUrl: item.startUrl || null,
+      testCase: extractScenarioTestCase(item),
+      ...normalizeSyncMetadata(item),
+    }));
+  state.queue = queue
+    .filter((item) => item && (item.scenarioId || item.scenario?.id))
+    .map((item) => ({
+      id: item.id || generateId('q'),
+      scenarioId: item.scenarioId || item.scenario?.id || null,
+      name: item.name || item.scenario?.name || 'Cenário',
+      duration: item.duration || item.scenario?.duration || 0,
+      eventCount: item.eventCount || item.scenario?.events?.length || 0,
+    }))
+    .filter((item) => item.scenarioId && state.savedScenarios.some((scenario) => scenario.id === item.scenarioId));
+  state.queueCursor = 0;
+  state.queuePaused = false;
+  state.queueRunning = false;
+  state.queueRecordVideo = false;
+  state.extendScenarioId = null;
+
+  saveScenarios();
+  broadcastState();
+  return res.json({ ok: true, state: serializeState() });
 });
 
 app.get('/api/scenarios/:id', async (req, res) => {
@@ -2537,6 +3295,7 @@ app.post('/api/scenarios/:id/inputs', async (req, res) => {
     event.customValue = String(update.customValue);
   });
 
+  markScenarioPendingSync(scenario);
   saveScenarios();
   broadcastState();
   return res.json({ ok: true });
@@ -2604,6 +3363,65 @@ app.post('/api/scenarios/:id/test-case/status', async (req, res) => {
   }
 });
 
+app.get('/api/scenarios/:id/test-case/failed-work/template', async (req, res) => {
+  const scenario = state.savedScenarios.find((item) => item.id === req.params.id);
+  if (!scenario) return res.status(404).json({ error: 'Cenário não encontrado.' });
+  const testCaseId = normalizeOptionalString(scenario?.testCase?.id);
+  if (!testCaseId) {
+    return res.status(400).json({ error: 'Este cenário não possui caso de teste Salesforce vinculado.' });
+  }
+
+  try {
+    const template = await fetchFailedWorkTemplateFromSalesforce(testCaseId);
+    return res.json({
+      ok: true,
+      template,
+    });
+  } catch (error) {
+    return res.status(Number(error.statusCode) || 500).json({ error: error.message });
+  }
+});
+
+app.post('/api/scenarios/:id/test-case/failed-work', async (req, res) => {
+  const scenario = state.savedScenarios.find((item) => item.id === req.params.id);
+  if (!scenario) return res.status(404).json({ error: 'Cenário não encontrado.' });
+  const testCaseId = normalizeOptionalString(scenario?.testCase?.id);
+  if (!testCaseId) {
+    return res.status(400).json({ error: 'Este cenário não possui caso de teste Salesforce vinculado.' });
+  }
+  const name = typeof req.body?.name === 'string' ? req.body.name : '';
+  const description = typeof req.body?.description === 'string' ? req.body.description : '';
+  const priority = typeof req.body?.priority === 'string' ? req.body.priority : '';
+  if (!name.trim()) {
+    return res.status(400).json({ error: 'Informe o assunto da nova Work.' });
+  }
+  const normalizedPriority = normalizeFailedWorkPriority(priority);
+  if (!normalizedPriority) {
+    return res.status(400).json({ error: 'Prioridade inválida. Use P0, P1 ou P2.' });
+  }
+  if (!description.replace(/\r\n/g, '\n').trim()) {
+    return res.status(400).json({ error: 'Informe a descrição da falha.' });
+  }
+
+  try {
+    const template = await fetchFailedWorkTemplateFromSalesforce(testCaseId);
+    const createdWork = await createRelatedFailedWorkRecord({
+      scenario,
+      template,
+      name,
+      description,
+      priority: normalizedPriority,
+    });
+    return res.json({
+      ok: true,
+      template,
+      work: createdWork,
+    });
+  } catch (error) {
+    return res.status(Number(error.statusCode) || 500).json({ error: error.message });
+  }
+});
+
 app.post('/api/scenarios/:id/move', async (req, res) => {
   const { id } = req.params;
   const direction = req.body?.direction;
@@ -2645,6 +3463,7 @@ app.post('/api/scenarios/:id/rename', async (req, res) => {
   const name = String(req.body?.name || '').trim();
   if (!name) return res.status(400).json({ error: 'Nome inválido.' });
   scenario.name = name;
+  markScenarioPendingSync(scenario);
   syncQueueScenario(scenario);
   saveScenarios();
   broadcastState();
@@ -2662,6 +3481,10 @@ app.post('/api/scenarios/:id/duplicate', async (req, res) => {
     duration: scenario.duration,
     startUrl: scenario.startUrl,
     testCase: scenario.testCase ? { ...scenario.testCase } : null,
+    CasoSincronizado: false,
+    cloudId: null,
+    syncedAt: null,
+    syncError: null,
   };
   state.savedScenarios.push(copy);
   saveScenarios();
@@ -2699,6 +3522,18 @@ app.delete('/api/scenarios/:id', async (req, res) => {
   const index = state.savedScenarios.findIndex((scenario) => scenario.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'Cenário não encontrado.' });
 
+  const deleteCloud = asBoolean(req.body?.deleteCloud);
+  const scenario = state.savedScenarios[index];
+  if (deleteCloud) {
+    try {
+      await deleteScenarioFromCloud(scenario);
+    } catch (error) {
+      return res.status(Number(error.statusCode) || 502).json({
+        error: error.message || 'Falha ao remover o caso da nuvem.',
+      });
+    }
+  }
+
   const [removed] = state.savedScenarios.splice(index, 1);
   if (removed) {
     state.queue = state.queue.filter((item) => item.scenarioId !== removed.id);
@@ -2707,7 +3542,7 @@ app.delete('/api/scenarios/:id', async (req, res) => {
   }
   saveScenarios();
   broadcastState();
-  return res.json({ ok: true });
+  return res.json({ ok: true, deletedCloud: deleteCloud });
 });
 
 app.get('/api/scenarios/export', async (req, res) => {
@@ -2732,6 +3567,7 @@ app.post('/api/scenarios/import', async (req, res) => {
       duration: item.duration || 0,
       startUrl: item.startUrl || null,
       testCase: extractScenarioTestCase(item),
+      ...normalizeSyncMetadata(item),
     }));
   state.queue = [];
   state.queueCursor = 0;
@@ -2901,7 +3737,7 @@ app.get('/api/recordings/:name/download', async (req, res) => {
     }
     res.setHeader('Content-Type', 'video/webm');
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
-    return res.sendFile(filePath);
+    return res.sendFile(filePath, { dotfiles: 'allow' });
   } catch (error) {
     return res.status(500).json({ error: 'Falha ao baixar captura.' });
   }

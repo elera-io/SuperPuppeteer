@@ -13,6 +13,8 @@ const closeBtn = document.getElementById('closeBtn');
 const replayLastBtn = document.getElementById('replayLastBtn');
 const saveScenarioBtn = document.getElementById('saveScenarioBtn');
 const openUrlBtn = document.getElementById('openUrlBtn');
+const syncScenariosBtn = document.getElementById('syncScenariosBtn');
+const importCloudScenariosBtn = document.getElementById('importCloudScenariosBtn');
 const exportScenariosBtn = document.getElementById('exportScenariosBtn');
 const importScenariosBtn = document.getElementById('importScenariosBtn');
 const importScenariosInput = document.getElementById('importScenariosInput');
@@ -36,10 +38,35 @@ const scenarioDescriptionStatus = document.getElementById('scenarioDescriptionSt
 const scenarioRecordingsAccordion = document.getElementById('scenarioRecordingsAccordion');
 const scenarioRecordingsRefresh = document.getElementById('scenarioRecordingsRefresh');
 const scenarioRecordingsList = document.getElementById('scenarioRecordingsList');
+const failedWorkModal = document.getElementById('failedWorkModal');
+const failedWorkClose = document.getElementById('failedWorkClose');
+const failedWorkCancel = document.getElementById('failedWorkCancel');
+const failedWorkSource = document.getElementById('failedWorkSource');
+const failedWorkSummary = document.getElementById('failedWorkSummary');
+const failedWorkNameInput = document.getElementById('failedWorkNameInput');
+const failedWorkDescriptionInput = document.getElementById('failedWorkDescriptionInput');
+const failedWorkPriorityInput = document.getElementById('failedWorkPriorityInput');
+const failedWorkCreate = document.getElementById('failedWorkCreate');
+const failedWorkStatus = document.getElementById('failedWorkStatus');
+const deleteScenarioModal = document.getElementById('deleteScenarioModal');
+const deleteScenarioName = document.getElementById('deleteScenarioName');
+const deleteScenarioStatus = document.getElementById('deleteScenarioStatus');
+const deleteScenarioLocal = document.getElementById('deleteScenarioLocal');
+const deleteScenarioCloud = document.getElementById('deleteScenarioCloud');
+const deleteScenarioCancel = document.getElementById('deleteScenarioCancel');
+const cloudImportModal = document.getElementById('cloudImportModal');
+const cloudImportClose = document.getElementById('cloudImportClose');
+const cloudImportCancel = document.getElementById('cloudImportCancel');
+const cloudImportRefresh = document.getElementById('cloudImportRefresh');
+const cloudImportSelectAll = document.getElementById('cloudImportSelectAll');
+const cloudImportConfirm = document.getElementById('cloudImportConfirm');
+const cloudImportList = document.getElementById('cloudImportList');
+const cloudImportStatus = document.getElementById('cloudImportStatus');
 
 const urlInput = document.getElementById('urlInput');
 const scenarioNameInput = document.getElementById('scenarioName');
 const scenarioTestCaseIdInput = document.getElementById('scenarioTestCaseId');
+const savedScenarioClientFilter = document.getElementById('savedScenarioClientFilter');
 const savedScenarioProjectFilter = document.getElementById('savedScenarioProjectFilter');
 const savedScenarioWorkFilter = document.getElementById('savedScenarioWorkFilter');
 const scenarioCompletionBanner = document.getElementById('scenarioCompletionBanner');
@@ -50,6 +77,7 @@ const eventsList = document.getElementById('eventsList');
 const replayLogList = document.getElementById('replayLogList');
 const savedScenariosList = document.getElementById('savedScenariosList');
 const queueList = document.getElementById('queueList');
+const themeToggle = document.getElementById('themeToggle');
 
 const state = {
   status: 'Idle',
@@ -70,10 +98,56 @@ const state = {
 
 let currentScenarioDetails = null;
 let currentScenarioRecordings = [];
+let pendingFailedWorkContext = null;
+let pendingDeleteScenarioId = null;
+let cloudScenarioCandidates = [];
 let scenarioCompletionTimeout = null;
+let localStateHydrated = false;
 const workspacePanels = {
   main: workspacePanelMain,
   scenarios: workspacePanelScenarios,
+};
+const THEME_STORAGE_KEY = 'uiThemePreference';
+const LOCAL_STATE_STORAGE_KEY = 'superpuppeteer.localState.v1';
+
+const normalizeTheme = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'light' || normalized === 'dark') return normalized;
+  return null;
+};
+const preferredThemeFromSystem = () => {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return 'dark';
+  }
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+};
+const currentTheme = () =>
+  normalizeTheme(document.documentElement.getAttribute('data-theme')) || 'dark';
+const applyTheme = (theme) => {
+  const resolvedTheme = normalizeTheme(theme) || 'dark';
+  document.documentElement.setAttribute('data-theme', resolvedTheme);
+  if (!themeToggle) return;
+  const isDark = resolvedTheme === 'dark';
+  const targetTheme = isDark ? 'claro' : 'escuro';
+  themeToggle.textContent = isDark ? 'Tema: Escuro' : 'Tema: Claro';
+  themeToggle.setAttribute(
+    'aria-label',
+    `Tema atual ${isDark ? 'escuro' : 'claro'}. Clique para ativar o tema ${targetTheme}.`
+  );
+};
+const initializeTheme = () => {
+  let savedTheme = null;
+  if (typeof window !== 'undefined' && window.localStorage) {
+    savedTheme = normalizeTheme(window.localStorage.getItem(THEME_STORAGE_KEY));
+  }
+  applyTheme(savedTheme || preferredThemeFromSystem());
+};
+const toggleTheme = () => {
+  const nextTheme = currentTheme() === 'dark' ? 'light' : 'dark';
+  applyTheme(nextTheme);
+  if (typeof window !== 'undefined' && window.localStorage) {
+    window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+  }
 };
 
 const escapeHtml = (value) => {
@@ -83,6 +157,75 @@ const escapeHtml = (value) => {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+};
+
+const normalizeLocalScenario = (item, index = 0) => {
+  if (!item || !Array.isArray(item.events)) return null;
+  return {
+    ...item,
+    id: String(item.id || `local_${Date.now()}_${index}`),
+    name: String(item.name || `Cenário ${index + 1}`),
+    createdAt: item.createdAt || new Date().toISOString(),
+    events: item.events,
+    duration: Number(item.duration) || 0,
+    startUrl: item.startUrl || null,
+    testCase: item.testCase || null,
+    CasoSincronizado: item.CasoSincronizado === true,
+    cloudId: item.cloudId || null,
+    syncedAt: item.syncedAt || null,
+    syncError: item.syncError || null,
+  };
+};
+const loadLocalState = () => {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return { savedScenarios: [], queue: [] };
+  }
+  try {
+    const raw = window.localStorage.getItem(LOCAL_STATE_STORAGE_KEY);
+    if (!raw) return { savedScenarios: [], queue: [] };
+    const parsed = JSON.parse(raw);
+    const savedScenarios = Array.isArray(parsed?.savedScenarios)
+      ? parsed.savedScenarios.map(normalizeLocalScenario).filter(Boolean)
+      : [];
+    const scenarioIds = new Set(savedScenarios.map((scenario) => scenario.id));
+    const queue = Array.isArray(parsed?.queue)
+      ? parsed.queue
+          .filter((item) => item && scenarioIds.has(item.scenarioId))
+          .map((item) => ({
+            id: String(item.id || `q_${Date.now()}`),
+            scenarioId: item.scenarioId,
+            name: item.name || 'Cenário',
+            duration: Number(item.duration) || 0,
+            eventCount: Number(item.eventCount) || 0,
+          }))
+      : [];
+    return { savedScenarios, queue };
+  } catch (error) {
+    return { savedScenarios: [], queue: [] };
+  }
+};
+const persistLocalState = () => {
+  if (!localStateHydrated || typeof window === 'undefined' || !window.localStorage) return;
+  const payload = {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    savedScenarios: Array.isArray(state.savedScenarios) ? state.savedScenarios : [],
+    queue: Array.isArray(state.queue) ? state.queue : [],
+  };
+  window.localStorage.setItem(LOCAL_STATE_STORAGE_KEY, JSON.stringify(payload));
+};
+const hydrateServerFromLocalState = async () => {
+  try {
+    await apiRequest('/api/local-state/hydrate', {
+      method: 'POST',
+      body: JSON.stringify({
+        savedScenarios: state.savedScenarios,
+        queue: state.queue,
+      }),
+    });
+  } catch (error) {
+    window.alert(error.message || 'Falha ao carregar a base local no servidor.');
+  }
 };
 
 const formatDuration = (ms) => {
@@ -142,6 +285,185 @@ const setScenarioStatusFeedback = (message, tone = '') => {
     scenarioStatusStatus.classList.add(tone);
   }
 };
+const normalizeFailedWorkPriority = (value) => {
+  const normalized = String(value || '').trim().toUpperCase();
+  if (normalized === 'P0' || normalized === 'P1' || normalized === 'P2') return normalized;
+  return '';
+};
+const setFailedWorkStatus = (message, tone = '') => {
+  if (!failedWorkStatus) return;
+  failedWorkStatus.textContent = message || '';
+  failedWorkStatus.className = 'hint description-status';
+  if (tone === 'success' || tone === 'error') {
+    failedWorkStatus.classList.add(tone);
+  }
+};
+const setFailedWorkControlsDisabled = (disabled) => {
+  if (failedWorkNameInput) failedWorkNameInput.disabled = disabled;
+  if (failedWorkDescriptionInput) failedWorkDescriptionInput.disabled = disabled;
+  if (failedWorkPriorityInput) failedWorkPriorityInput.disabled = disabled;
+  if (failedWorkCreate) failedWorkCreate.disabled = disabled;
+};
+const formatNameWithId = (name, id) => {
+  const normalizedName = String(name || '').trim();
+  const normalizedId = String(id || '').trim();
+  if (normalizedName && normalizedId) return `${normalizedName} (${normalizedId})`;
+  if (normalizedName) return normalizedName;
+  if (normalizedId) return normalizedId;
+  return '—';
+};
+const buildFailedWorkNameDefault = (scenario, template = null) => {
+  const fromTemplate = String(template?.suggestedWorkName || '').trim();
+  if (fromTemplate) return fromTemplate;
+  const workName = String(template?.workName || scenario?.testCase?.workName || '').trim();
+  const testCaseName = String(scenario?.testCase?.name || template?.testCaseName || scenario?.name || '').trim();
+  const joined = [workName, testCaseName].filter(Boolean).join(' - ');
+  return joined || workName || testCaseName;
+};
+const renderFailedWorkSummary = (template) => {
+  if (!failedWorkSummary) return;
+  if (!template || typeof template !== 'object') {
+    failedWorkSummary.innerHTML = '<div class="meta">Carregando dados da Work vinculada...</div>';
+    return;
+  }
+  const line = (label, value) =>
+    `<div class="meta"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value || '—')}</div>`;
+  failedWorkSummary.innerHTML = `
+    <div class="title">${escapeHtml(formatNameWithId(template.workName, template.workId))}</div>
+    ${line('Cliente', template.clientName)}
+    ${line('Projeto', template.projectName)}
+    ${line('Work', formatNameWithId(template.workName, template.workId))}
+    ${line('Product Tag', formatNameWithId(template.productTagName, template.productTagId))}
+    ${line('Scrum Team', formatNameWithId(template.scrumTeamName, template.scrumTeamId))}
+    ${line('Found in Build', formatNameWithId(template.foundInBuildName, template.foundInBuildId))}
+    ${line('Assignee', formatNameWithId(template.assigneeName, template.assigneeId))}
+    ${line('Product Owner', formatNameWithId(template.productOwnerName, template.productOwnerId))}
+  `;
+};
+const closeFailedWorkModal = () => {
+  if (!failedWorkModal) return;
+  failedWorkModal.classList.add('hidden');
+  failedWorkModal.setAttribute('aria-hidden', 'true');
+  pendingFailedWorkContext = null;
+  if (failedWorkSource) failedWorkSource.textContent = '';
+  if (failedWorkNameInput) failedWorkNameInput.value = '';
+  if (failedWorkDescriptionInput) failedWorkDescriptionInput.value = '';
+  if (failedWorkPriorityInput) failedWorkPriorityInput.value = 'P1';
+  if (failedWorkSummary) failedWorkSummary.innerHTML = '';
+  setFailedWorkStatus('');
+  setFailedWorkControlsDisabled(false);
+};
+const setDeleteScenarioStatus = (message, tone = '') => {
+  if (!deleteScenarioStatus) return;
+  deleteScenarioStatus.textContent = message || '';
+  deleteScenarioStatus.className = 'hint description-status';
+  if (tone === 'success' || tone === 'error') {
+    deleteScenarioStatus.classList.add(tone);
+  }
+};
+const setDeleteScenarioControlsDisabled = (disabled) => {
+  if (deleteScenarioLocal) deleteScenarioLocal.disabled = disabled;
+  if (deleteScenarioCloud) deleteScenarioCloud.disabled = disabled;
+  if (deleteScenarioCancel) deleteScenarioCancel.disabled = disabled;
+};
+const closeDeleteScenarioModal = () => {
+  if (!deleteScenarioModal) return;
+  deleteScenarioModal.classList.add('hidden');
+  deleteScenarioModal.setAttribute('aria-hidden', 'true');
+  pendingDeleteScenarioId = null;
+  if (deleteScenarioName) deleteScenarioName.textContent = '';
+  setDeleteScenarioStatus('');
+  setDeleteScenarioControlsDisabled(false);
+};
+const openDeleteScenarioModal = (scenarioId) => {
+  if (!deleteScenarioModal) return;
+  const scenario = state.savedScenarios.find((item) => item.id === scenarioId);
+  if (!scenario) return;
+  pendingDeleteScenarioId = scenarioId;
+  if (deleteScenarioName) {
+    deleteScenarioName.textContent = scenario.name ? `Caso: ${scenario.name}` : '';
+  }
+  setDeleteScenarioStatus('');
+  setDeleteScenarioControlsDisabled(false);
+  deleteScenarioModal.classList.remove('hidden');
+  deleteScenarioModal.setAttribute('aria-hidden', 'false');
+};
+const deletePendingScenario = async (deleteCloud) => {
+  const scenarioId = String(pendingDeleteScenarioId || '').trim();
+  if (!scenarioId) return;
+  setDeleteScenarioControlsDisabled(true);
+  setDeleteScenarioStatus(
+    deleteCloud ? 'Removendo caso local e registro da nuvem...' : 'Removendo caso apenas localmente...'
+  );
+  try {
+    await apiRequest(`/api/scenarios/${scenarioId}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ deleteCloud }),
+    });
+    setDeleteScenarioStatus('Caso removido com sucesso.', 'success');
+    closeDeleteScenarioModal();
+  } catch (error) {
+    setDeleteScenarioStatus(error.message || 'Falha ao remover o caso.', 'error');
+    setDeleteScenarioControlsDisabled(false);
+  }
+};
+const openFailedWorkModal = async (scenario) => {
+  if (!failedWorkModal) return;
+  const scenarioId = String(scenario?.id || '').trim();
+  const testCaseId = String(scenario?.testCase?.id || '').trim();
+  if (!scenarioId || !testCaseId) return;
+
+  pendingFailedWorkContext = {
+    scenarioId,
+    testCaseId,
+    template: null,
+  };
+
+  if (failedWorkSource) {
+    const testCaseName = String(scenario?.testCase?.name || '').trim() || 'Caso sem nome';
+    const scenarioName = String(scenario?.name || '').trim() || 'Cenário sem nome';
+    failedWorkSource.textContent = `Caso: ${testCaseName} · Cenário: ${scenarioName}`;
+  }
+  if (failedWorkNameInput) {
+    failedWorkNameInput.value = buildFailedWorkNameDefault(scenario);
+  }
+  if (failedWorkDescriptionInput) {
+    const fallbackDescription =
+      typeof scenarioDescriptionInput?.value === 'string' && scenarioDescriptionInput.value.length
+        ? scenarioDescriptionInput.value
+        : typeof scenario?.testCase?.description === 'string'
+          ? scenario.testCase.description
+          : '';
+    failedWorkDescriptionInput.value = fallbackDescription;
+  }
+  if (failedWorkPriorityInput) failedWorkPriorityInput.value = 'P1';
+  renderFailedWorkSummary(null);
+  setFailedWorkStatus('Carregando dados da Work do caso de teste...');
+  setFailedWorkControlsDisabled(true);
+  failedWorkModal.classList.remove('hidden');
+  failedWorkModal.setAttribute('aria-hidden', 'false');
+
+  try {
+    const response = await apiRequest(`/api/scenarios/${scenarioId}/test-case/failed-work/template`);
+    const payload = await response.json().catch(() => ({}));
+    const template = payload?.template && typeof payload.template === 'object' ? payload.template : null;
+    if (!template || !template.workId) {
+      throw new Error('Não foi possível obter os dados da Work vinculada ao caso de teste.');
+    }
+    pendingFailedWorkContext = {
+      ...pendingFailedWorkContext,
+      template,
+    };
+    if (failedWorkNameInput && !failedWorkNameInput.value.trim()) {
+      failedWorkNameInput.value = buildFailedWorkNameDefault(scenario, template);
+    }
+    renderFailedWorkSummary(template);
+    setFailedWorkStatus('Dados carregados. Informe a descrição e selecione a prioridade.');
+    setFailedWorkControlsDisabled(false);
+  } catch (error) {
+    setFailedWorkStatus(error.message || 'Falha ao carregar dados da Work vinculada.', 'error');
+  }
+};
 const renderScenarioDescription = (scenario) => {
   if (
     !scenarioDescriptionAccordion ||
@@ -177,9 +499,41 @@ const renderScenarioDescription = (scenario) => {
   setScenarioStatusFeedback('');
   setScenarioDescriptionStatus('');
 };
-const scenarioTestCaseId = (scenario) => String(scenario?.testCase?.id || '').trim();
-const scenarioProjectName = (scenario) => String(scenario?.testCase?.projectName || '').trim();
-const scenarioWorkName = (scenario) => String(scenario?.testCase?.workName || '').trim();
+const LOCAL_CLIENT_LABEL = 'Local';
+const LOCAL_PROJECT_LABEL = 'Sem projeto';
+const LOCAL_WORK_LABEL = 'Sem work';
+const scenarioHasTestCase = (scenario) => Boolean(String(scenario?.testCase?.id || '').trim());
+const scenarioTestCaseId = (scenario) => {
+  const testCaseId = String(scenario?.testCase?.id || '').trim();
+  return testCaseId || (scenario?.id ? `local:${scenario.id}` : '');
+};
+const scenarioClientName = (scenario) =>
+  String(scenario?.testCase?.clientName || '').trim() || LOCAL_CLIENT_LABEL;
+const scenarioProjectName = (scenario) =>
+  String(scenario?.testCase?.projectName || '').trim() || LOCAL_PROJECT_LABEL;
+const scenarioWorkName = (scenario) =>
+  String(scenario?.testCase?.workName || '').trim() || LOCAL_WORK_LABEL;
+const scenarioSyncState = (scenario) => {
+  if (scenario?.syncError) {
+    return {
+      label: 'Erro',
+      className: 'sync-error',
+      title: scenario.syncError,
+    };
+  }
+  if (scenario?.CasoSincronizado === true) {
+    return {
+      label: 'Sincronizado',
+      className: 'sync-ok',
+      title: scenario.syncedAt ? `Sincronizado em ${new Date(scenario.syncedAt).toLocaleString()}` : '',
+    };
+  }
+  return {
+    label: 'Pendente',
+    className: 'sync-pending',
+    title: 'Caso ainda não sincronizado com a nuvem.',
+  };
+};
 const scenarioFilterOptions = (scenarios, resolver) => {
   return [...new Set((scenarios || []).map(resolver).filter(Boolean))].sort((a, b) =>
     a.localeCompare(b, 'pt-BR', { sensitivity: 'base' })
@@ -210,29 +564,54 @@ const fillScenarioFilter = (selectEl, options, allLabel) => {
 };
 const syncScenarioFilters = () => {
   const scenarios = savedScenariosWithTestCase();
-  const projects = scenarioFilterOptions(scenarios, scenarioProjectName);
-  fillScenarioFilter(savedScenarioProjectFilter, projects, 'Selecione o projeto');
-  const selectedProject = savedScenarioProjectFilter ? savedScenarioProjectFilter.value : '';
-  const scopedScenarios = selectedProject
-    ? scenarios.filter((scenario) => scenarioProjectName(scenario) === selectedProject)
+
+  const clients = scenarioFilterOptions(scenarios, scenarioClientName);
+  fillScenarioFilter(savedScenarioClientFilter, clients, 'Selecione o cliente');
+
+  const selectedClient = savedScenarioClientFilter ? savedScenarioClientFilter.value : '';
+  const clientScopedScenarios = selectedClient
+    ? scenarios.filter((scenario) => scenarioClientName(scenario) === selectedClient)
     : [];
-  const works = scenarioFilterOptions(scopedScenarios, scenarioWorkName);
+
+  const projects = scenarioFilterOptions(clientScopedScenarios, scenarioProjectName);
+  fillScenarioFilter(
+    savedScenarioProjectFilter,
+    projects,
+    selectedClient ? 'Selecione o projeto' : 'Escolha o cliente primeiro'
+  );
+
+  const selectedProject = savedScenarioProjectFilter ? savedScenarioProjectFilter.value : '';
+  const projectScopedScenarios = selectedClient && selectedProject
+    ? clientScopedScenarios.filter((scenario) => scenarioProjectName(scenario) === selectedProject)
+    : [];
+  const works = scenarioFilterOptions(projectScopedScenarios, scenarioWorkName);
   fillScenarioFilter(
     savedScenarioWorkFilter,
     works,
-    selectedProject ? 'Selecione o work' : 'Escolha o projeto primeiro'
+    selectedProject
+      ? 'Selecione o work'
+      : selectedClient
+        ? 'Escolha o projeto primeiro'
+        : 'Escolha o cliente primeiro'
   );
+
+  if (savedScenarioProjectFilter) {
+    savedScenarioProjectFilter.disabled = !selectedClient;
+  }
   if (savedScenarioWorkFilter) {
-    savedScenarioWorkFilter.disabled = !selectedProject;
+    savedScenarioWorkFilter.disabled = !(selectedClient && selectedProject);
   }
 };
 const filteredSavedScenarios = () => {
+  const selectedClient = savedScenarioClientFilter ? savedScenarioClientFilter.value : '';
   const selectedProject = savedScenarioProjectFilter ? savedScenarioProjectFilter.value : '';
   const selectedWork = savedScenarioWorkFilter ? savedScenarioWorkFilter.value : '';
-  if (!selectedProject || !selectedWork) return [];
+  if (!selectedClient || !selectedProject || !selectedWork) return [];
   return savedScenariosWithTestCase().filter((scenario) => {
     return (
-      scenarioProjectName(scenario) === selectedProject && scenarioWorkName(scenario) === selectedWork
+      scenarioClientName(scenario) === selectedClient &&
+      scenarioProjectName(scenario) === selectedProject &&
+      scenarioWorkName(scenario) === selectedWork
     );
   });
 };
@@ -242,12 +621,17 @@ const groupedTestCases = (scenarios) => {
     const testCaseId = scenarioTestCaseId(scenario);
     if (!testCaseId) return;
     const testCase = scenario.testCase || {};
+    const hasTestCase = scenarioHasTestCase(scenario);
     const current = byTestCase.get(testCaseId);
     if (!current) {
       byTestCase.set(testCaseId, {
         id: testCaseId,
-        name: String(testCase.name || '').trim(),
-        status: String(testCase.status || '').trim(),
+        isLocal: !hasTestCase,
+        name: String(testCase.name || scenario.name || '').trim(),
+        status: String(
+          testCase.status || (scenario.CasoSincronizado ? 'Sincronizado' : 'Pendente')
+        ).trim(),
+        clientName: scenarioClientName(scenario),
         projectName: scenarioProjectName(scenario),
         workName: scenarioWorkName(scenario),
         scenarios: [scenario],
@@ -256,6 +640,7 @@ const groupedTestCases = (scenarios) => {
     }
     if (!current.name && testCase.name) current.name = String(testCase.name).trim();
     if (!current.status && testCase.status) current.status = String(testCase.status).trim();
+    if (!current.clientName && scenarioClientName(scenario)) current.clientName = scenarioClientName(scenario);
     if (!current.projectName && scenarioProjectName(scenario)) current.projectName = scenarioProjectName(scenario);
     if (!current.workName && scenarioWorkName(scenario)) current.workName = scenarioWorkName(scenario);
     current.scenarios.push(scenario);
@@ -269,8 +654,8 @@ const groupedTestCases = (scenarios) => {
       ),
     }))
     .sort((a, b) => {
-      const left = `${a.name || ''}${a.id}`.trim();
-      const right = `${b.name || ''}${b.id}`.trim();
+      const left = `${a.clientName || ''}|${a.projectName || ''}|${a.workName || ''}|${a.name || ''}|${a.id}`.trim();
+      const right = `${b.clientName || ''}|${b.projectName || ''}|${b.workName || ''}|${b.name || ''}|${b.id}`.trim();
       return left.localeCompare(right, 'pt-BR', { sensitivity: 'base' });
     });
 };
@@ -427,7 +812,13 @@ const updateRecordVideoToggle = () => {
 };
 
 const updateStatus = () => {
-  statusPill.textContent = state.status;
+  const localizedStatus = {
+    Idle: 'Ocioso',
+    Recording: 'Gravando',
+    Paused: 'Pausado',
+    Replaying: 'Reproduzindo',
+  };
+  statusPill.textContent = localizedStatus[state.status] || state.status;
   statusPill.classList.remove('recording', 'paused', 'replaying');
 
   if (state.status === 'Recording') statusPill.classList.add('recording');
@@ -475,6 +866,11 @@ const updateButtons = () => {
   replayLastBtn.disabled = !state.lastRecording || isRecording || isPaused || isReplaying;
   saveScenarioBtn.disabled = !state.lastRecording;
   if (exportScenariosBtn) exportScenariosBtn.disabled = state.savedScenarios.length === 0;
+  if (syncScenariosBtn) {
+    syncScenariosBtn.disabled =
+      state.savedScenarios.length === 0 ||
+      !state.savedScenarios.some((scenario) => scenario.CasoSincronizado !== true);
+  }
 
   const queueRunning = state.queueStatus?.running;
   const queuePaused = state.queueStatus?.paused;
@@ -575,6 +971,7 @@ const openScenarioEvidence = async (id) => {
 
 const closeScenarioDetails = () => {
   if (!scenarioModal) return;
+  closeFailedWorkModal();
   scenarioModal.classList.add('hidden');
   scenarioModal.setAttribute('aria-hidden', 'true');
   currentScenarioDetails = null;
@@ -592,7 +989,7 @@ const renderEvents = () => {
   eventsList.innerHTML = '';
   if (!state.events.length) {
     const empty = document.createElement('div');
-    empty.className = 'list-item';
+    empty.className = 'list-item empty-state';
     empty.textContent = 'Nenhuma ação capturada ainda.';
     eventsList.appendChild(empty);
     return;
@@ -615,7 +1012,7 @@ const renderReplayLog = () => {
   replayLogList.innerHTML = '';
   if (!state.replayLog || !state.replayLog.length) {
     const empty = document.createElement('div');
-    empty.className = 'list-item';
+    empty.className = 'list-item empty-state';
     empty.textContent = 'Sem logs de replay no momento.';
     replayLogList.appendChild(empty);
     return;
@@ -640,17 +1037,26 @@ const renderSavedScenarios = () => {
   const linkedScenarios = savedScenariosWithTestCase();
   if (!linkedScenarios.length) {
     const empty = document.createElement('div');
-    empty.className = 'list-item';
-    empty.textContent = 'Nenhum cenário com caso de teste Salesforce vinculado ainda.';
+    empty.className = 'list-item empty-state';
+    empty.textContent = 'Nenhum cenário salvo ainda.';
     savedScenariosList.appendChild(empty);
     return;
   }
 
+  const selectedClient = savedScenarioClientFilter ? savedScenarioClientFilter.value : '';
   const selectedProject = savedScenarioProjectFilter ? savedScenarioProjectFilter.value : '';
   const selectedWork = savedScenarioWorkFilter ? savedScenarioWorkFilter.value : '';
+  if (!selectedClient) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item empty-state';
+    empty.textContent = 'Selecione um cliente para listar os casos de teste.';
+    savedScenariosList.appendChild(empty);
+    return;
+  }
+
   if (!selectedProject) {
     const empty = document.createElement('div');
-    empty.className = 'list-item';
+    empty.className = 'list-item empty-state';
     empty.textContent = 'Selecione um projeto para listar os casos de teste.';
     savedScenariosList.appendChild(empty);
     return;
@@ -658,7 +1064,7 @@ const renderSavedScenarios = () => {
 
   if (!selectedWork) {
     const empty = document.createElement('div');
-    empty.className = 'list-item';
+    empty.className = 'list-item empty-state';
     empty.textContent = 'Selecione um work para listar os casos de teste.';
     savedScenariosList.appendChild(empty);
     return;
@@ -667,7 +1073,7 @@ const renderSavedScenarios = () => {
   const scenarios = filteredSavedScenarios();
   if (!scenarios.length) {
     const empty = document.createElement('div');
-    empty.className = 'list-item';
+    empty.className = 'list-item empty-state';
     empty.textContent = 'Nenhum caso de teste encontrado para o projeto/work selecionados.';
     savedScenariosList.appendChild(empty);
     return;
@@ -682,12 +1088,18 @@ const renderSavedScenarios = () => {
         const extendLabel = isExtendActive ? 'Cancelar extensão' : 'Estender';
         const extendDisabled =
           state.status === 'Recording' || state.status === 'Paused' || state.status === 'Replaying';
+        const syncState = scenarioSyncState(scenario);
+        const syncTitle = syncState.title ? ` title="${escapeHtml(syncState.title)}"` : '';
+        const syncErrorText = scenario.syncError ? ` · ${scenario.syncError}` : '';
         return `
           <div class="case-scenario-row">
-            <div class="title">${escapeHtml(scenario.name)}</div>
+            <div class="case-scenario-title">
+              <div class="title">${escapeHtml(scenario.name)}</div>
+              <span class="sync-chip ${syncState.className}"${syncTitle}>${syncState.label}</span>
+            </div>
             <div class="meta">${
               Number.isFinite(Number(scenario.eventCount)) ? Number(scenario.eventCount) : 0
-            } eventos · ${formatDuration(scenario.duration)}</div>
+            } eventos · ${formatDuration(scenario.duration)}${escapeHtml(syncErrorText)}</div>
             <div class="scenario-actions">
               <button data-action="run" data-id="${scenario.id}">Executar</button>
               <button data-action="queue" data-id="${scenario.id}">Enviar à fila</button>
@@ -699,7 +1111,7 @@ const renderSavedScenarios = () => {
               <button data-action="evidence" data-id="${scenario.id}">Evidência</button>
               <button data-action="details" data-id="${scenario.id}">Detalhes</button>
               <button data-action="rename" data-id="${scenario.id}">Renomear</button>
-              <button data-action="delete" data-id="${scenario.id}">Remover</button>
+              <button data-action="delete" data-id="${scenario.id}" class="danger">Remover</button>
             </div>
           </div>
         `;
@@ -707,12 +1119,13 @@ const renderSavedScenarios = () => {
       .join('');
     const item = document.createElement('div');
     item.className = 'list-item';
+    const sourceMeta = testCase.isLocal ? 'Origem: Local' : `ID: ${testCase.id}`;
     item.innerHTML = `
       <div class="title">${escapeHtml(testCase.name || 'Caso sem nome')}</div>
       <div class="meta">${escapeHtml(
-        `ID: ${testCase.id} · Status: ${statusLabel} · Projeto: ${testCase.projectName || '—'} · Work: ${
-          testCase.workName || '—'
-        }`
+        `${sourceMeta} · Status: ${statusLabel} · Cliente: ${testCase.clientName || '—'} · Projeto: ${
+          testCase.projectName || '—'
+        } · Work: ${testCase.workName || '—'}`
       )}</div>
       <div class="meta">${testCase.scenarios.length} cenário(s) vinculado(s)</div>
       <div class="case-scenarios">${scenarioRows}</div>
@@ -725,7 +1138,7 @@ const renderQueue = () => {
   queueList.innerHTML = '';
   if (!state.queue.length) {
     const empty = document.createElement('div');
-    empty.className = 'list-item';
+    empty.className = 'list-item empty-state';
     empty.textContent = 'Fila vazia. Envie cenários para executar em sequência.';
     queueList.appendChild(empty);
     return;
@@ -900,6 +1313,211 @@ const importScenarios = async (file) => {
   });
 };
 
+const syncScenarios = async () => {
+  if (!syncScenariosBtn) return;
+  const originalText = syncScenariosBtn.textContent;
+  syncScenariosBtn.disabled = true;
+  syncScenariosBtn.textContent = 'Sincronizando...';
+  try {
+    const response = await apiRequest('/api/scenarios/sync', { method: 'POST' });
+    const payload = await response.json().catch(() => ({}));
+    if (!payload.pending) {
+      window.alert('Nenhum caso pendente para sincronizar.');
+      return;
+    }
+    if (payload.failed) {
+      window.alert(
+        `${payload.synced || 0} caso(s) sincronizado(s), ${payload.failed} com falha. Verifique os casos marcados com erro.`
+      );
+      return;
+    }
+    window.alert(`${payload.synced || 0} caso(s) sincronizado(s) com sucesso.`);
+  } catch (error) {
+    window.alert(error.message || 'Falha ao sincronizar casos.');
+  } finally {
+    syncScenariosBtn.textContent = originalText;
+    updateButtons();
+  }
+};
+
+const cloudScenarioKey = (scenario) =>
+  String(scenario?.cloudId || scenario?.id || '').trim();
+const scenarioAlreadyImported = (scenario) => {
+  const cloudId = String(scenario?.cloudId || '').trim();
+  const localId = String(scenario?.id || '').trim();
+  return state.savedScenarios.some((item) => {
+    const itemCloudId = String(item?.cloudId || '').trim();
+    const itemId = String(item?.id || '').trim();
+    return (cloudId && itemCloudId === cloudId) || (localId && itemId === localId);
+  });
+};
+const nextImportedScenarioId = (index = 0) =>
+  `imported_${Date.now().toString(36)}_${index}_${Math.random().toString(36).slice(2, 7)}`;
+const selectedCloudScenarioKeys = () => {
+  if (!cloudImportList) return new Set();
+  return new Set(
+    [...cloudImportList.querySelectorAll('input[data-cloud-key]:checked')].map((input) =>
+      input.getAttribute('data-cloud-key')
+    )
+  );
+};
+const updateCloudImportConfirmState = () => {
+  if (!cloudImportConfirm) return;
+  cloudImportConfirm.disabled = selectedCloudScenarioKeys().size === 0;
+};
+const renderCloudImportList = (options = {}) => {
+  if (!cloudImportList) return;
+  const loading = Boolean(options.loading);
+  cloudImportList.innerHTML = '';
+  if (loading) {
+    const loadingItem = document.createElement('div');
+    loadingItem.className = 'list-item empty-state';
+    loadingItem.textContent = 'Carregando casos da nuvem...';
+    cloudImportList.appendChild(loadingItem);
+    if (cloudImportStatus) cloudImportStatus.textContent = 'Consultando o PostgreSQL remoto.';
+    updateCloudImportConfirmState();
+    return;
+  }
+
+  if (!cloudScenarioCandidates.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item empty-state';
+    empty.textContent = 'Nenhum caso encontrado na nuvem.';
+    cloudImportList.appendChild(empty);
+    if (cloudImportStatus) cloudImportStatus.textContent = 'Nenhum caso retornado pelo PostgreSQL remoto.';
+    updateCloudImportConfirmState();
+    return;
+  }
+
+  const availableCount = cloudScenarioCandidates.filter((scenario) => !scenarioAlreadyImported(scenario)).length;
+  if (cloudImportStatus) {
+    cloudImportStatus.textContent = `${cloudScenarioCandidates.length} caso(s) na nuvem, ${availableCount} disponível(is) para importar.`;
+  }
+
+  cloudScenarioCandidates.forEach((scenario, index) => {
+    const key = cloudScenarioKey(scenario) || `cloud_${index}`;
+    const imported = scenarioAlreadyImported(scenario);
+    const syncedAt = scenario.syncedAt ? new Date(scenario.syncedAt).toLocaleString() : '—';
+    const item = document.createElement('label');
+    item.className = `list-item cloud-scenario-row${imported ? ' cloud-scenario-row-disabled' : ''}`;
+    item.innerHTML = `
+      <input
+        type="checkbox"
+        data-cloud-key="${escapeHtml(key)}"
+        ${imported ? 'disabled' : ''}
+      />
+      <div class="cloud-scenario-content">
+        <div class="case-scenario-title">
+          <div class="title">${escapeHtml(scenario.name || 'Cenário')}</div>
+          <span class="sync-chip ${imported ? 'sync-pending' : 'sync-ok'}">
+            ${imported ? 'Já importado' : 'Na nuvem'}
+          </span>
+        </div>
+        <div class="meta">${escapeHtml(
+          `Cliente: ${scenarioClientName(scenario)} · Projeto: ${scenarioProjectName(scenario)} · Work: ${scenarioWorkName(scenario)}`
+        )}</div>
+        <div class="meta">${escapeHtml(
+          `${Number(scenario.eventCount || scenario.events?.length || 0)} eventos · ${formatDuration(
+            scenario.duration
+          )} · Sincronizado em ${syncedAt}`
+        )}</div>
+      </div>
+    `;
+    cloudImportList.appendChild(item);
+  });
+  updateCloudImportConfirmState();
+};
+const loadCloudScenarios = async () => {
+  renderCloudImportList({ loading: true });
+  const response = await apiRequest('/api/scenarios/cloud?limit=500');
+  const payload = await response.json().catch(() => ({}));
+  cloudScenarioCandidates = Array.isArray(payload.scenarios)
+    ? payload.scenarios.map(normalizeLocalScenario).filter(Boolean)
+    : [];
+  renderCloudImportList();
+};
+const openCloudImportModal = async () => {
+  if (!cloudImportModal) return;
+  cloudImportModal.classList.remove('hidden');
+  cloudImportModal.setAttribute('aria-hidden', 'false');
+  cloudScenarioCandidates = [];
+  try {
+    await loadCloudScenarios();
+  } catch (error) {
+    showCloudImportError(error);
+  }
+};
+const showCloudImportError = (error) => {
+  cloudScenarioCandidates = [];
+  if (cloudImportList) {
+    cloudImportList.innerHTML = '';
+    const item = document.createElement('div');
+    item.className = 'list-item empty-state';
+    item.textContent = error?.message || 'Falha ao carregar casos da nuvem.';
+    cloudImportList.appendChild(item);
+  }
+  if (cloudImportStatus) cloudImportStatus.textContent = 'Não foi possível consultar a nuvem.';
+  updateCloudImportConfirmState();
+};
+const closeCloudImportModal = () => {
+  if (!cloudImportModal) return;
+  cloudImportModal.classList.add('hidden');
+  cloudImportModal.setAttribute('aria-hidden', 'true');
+  cloudScenarioCandidates = [];
+  if (cloudImportList) cloudImportList.innerHTML = '';
+  if (cloudImportStatus) {
+    cloudImportStatus.textContent = 'Selecione os casos do PostgreSQL remoto para trazer para esta máquina.';
+  }
+  updateCloudImportConfirmState();
+};
+const selectAvailableCloudScenarios = () => {
+  if (!cloudImportList) return;
+  cloudImportList.querySelectorAll('input[data-cloud-key]:not(:disabled)').forEach((input) => {
+    input.checked = true;
+  });
+  updateCloudImportConfirmState();
+};
+const importSelectedCloudScenarios = async () => {
+  const selectedKeys = selectedCloudScenarioKeys();
+  if (!selectedKeys.size) {
+    window.alert('Selecione pelo menos um caso para importar.');
+    return;
+  }
+
+  const existingIds = new Set(state.savedScenarios.map((scenario) => scenario.id).filter(Boolean));
+  const existingCloudIds = new Set(state.savedScenarios.map((scenario) => scenario.cloudId).filter(Boolean));
+  const imported = [];
+  cloudScenarioCandidates.forEach((scenario, index) => {
+    const key = cloudScenarioKey(scenario) || `cloud_${index}`;
+    if (!selectedKeys.has(key) || scenarioAlreadyImported(scenario)) return;
+    const cloned = normalizeLocalScenario(JSON.parse(JSON.stringify(scenario)), state.savedScenarios.length + index);
+    if (!cloned) return;
+    cloned.CasoSincronizado = true;
+    cloned.syncError = null;
+    cloned.syncedAt = cloned.syncedAt || new Date().toISOString();
+    if (cloned.cloudId && existingCloudIds.has(cloned.cloudId)) return;
+    if (existingIds.has(cloned.id)) {
+      cloned.id = nextImportedScenarioId(index);
+    }
+    existingIds.add(cloned.id);
+    if (cloned.cloudId) existingCloudIds.add(cloned.cloudId);
+    imported.push(cloned);
+  });
+
+  if (!imported.length) {
+    window.alert('Nenhum caso novo para importar.');
+    renderCloudImportList();
+    return;
+  }
+
+  state.savedScenarios = [...state.savedScenarios, ...imported];
+  persistLocalState();
+  render();
+  await hydrateServerFromLocalState();
+  window.alert(`${imported.length} caso(s) importado(s) da nuvem.`);
+  closeCloudImportModal();
+};
+
 const normalizeUrl = (value) => {
   if (!value) return '';
   if (/^https?:\/\//i.test(value)) return value;
@@ -911,21 +1529,47 @@ const getReplayUrlOverride = () => {
   return value ? normalizeUrl(value) : '';
 };
 const shouldRecordVideo = () => Boolean(state.recordVideoEnabled);
+const runButtonAction = async (button, action, fallbackMessage) => {
+  if (button) button.disabled = true;
+  try {
+    await action();
+  } catch (error) {
+    window.alert(error.message || fallbackMessage || 'Falha na operação.');
+  } finally {
+    updateButtons();
+  }
+};
 
 startBtn.addEventListener('click', async () => {
-  await apiRequest('/api/recording/start', { method: 'POST' });
+  await runButtonAction(
+    startBtn,
+    () => apiRequest('/api/recording/start', { method: 'POST' }),
+    'Não foi possível iniciar a gravação.'
+  );
 });
 
 pauseBtn.addEventListener('click', async () => {
-  await apiRequest('/api/recording/pause', { method: 'POST' });
+  await runButtonAction(
+    pauseBtn,
+    () => apiRequest('/api/recording/pause', { method: 'POST' }),
+    'Não foi possível pausar a gravação.'
+  );
 });
 
 resumeBtn.addEventListener('click', async () => {
-  await apiRequest('/api/recording/resume', { method: 'POST' });
+  await runButtonAction(
+    resumeBtn,
+    () => apiRequest('/api/recording/resume', { method: 'POST' }),
+    'Não foi possível retomar a gravação.'
+  );
 });
 
 stopBtn.addEventListener('click', async () => {
-  await apiRequest('/api/recording/stop', { method: 'POST' });
+  await runButtonAction(
+    stopBtn,
+    () => apiRequest('/api/recording/stop', { method: 'POST' }),
+    'Não foi possível finalizar a gravação.'
+  );
 });
 
 exportBtn.addEventListener('click', async () => {
@@ -935,6 +1579,18 @@ exportBtn.addEventListener('click', async () => {
 if (exportScenariosBtn) {
   exportScenariosBtn.addEventListener('click', async () => {
     await downloadScenarios();
+  });
+}
+
+if (syncScenariosBtn) {
+  syncScenariosBtn.addEventListener('click', async () => {
+    await syncScenarios();
+  });
+}
+
+if (importCloudScenariosBtn) {
+  importCloudScenariosBtn.addEventListener('click', async () => {
+    await openCloudImportModal();
   });
 }
 
@@ -976,6 +1632,12 @@ if (recordVideoToggle) {
   });
 }
 
+if (themeToggle) {
+  themeToggle.addEventListener('click', () => {
+    toggleTheme();
+  });
+}
+
 if (queueRunBtn) {
   queueRunBtn.addEventListener('click', async () => {
     const overrideUrl = getReplayUrlOverride();
@@ -1005,21 +1667,43 @@ if (queueResumeBtn) {
 saveScenarioBtn.addEventListener('click', async () => {
   const name = scenarioNameInput.value.trim();
   const testCaseId = scenarioTestCaseIdInput ? scenarioTestCaseIdInput.value.trim() : '';
-  await apiRequest('/api/scenarios/save', {
-    method: 'POST',
-    body: JSON.stringify({ name, testCaseId }),
-  });
-  scenarioNameInput.value = '';
-  if (scenarioTestCaseIdInput) scenarioTestCaseIdInput.value = '';
+  try {
+    await apiRequest('/api/scenarios/save', {
+      method: 'POST',
+      body: JSON.stringify({ name, testCaseId }),
+    });
+    scenarioNameInput.value = '';
+    if (scenarioTestCaseIdInput) scenarioTestCaseIdInput.value = '';
+  } catch (error) {
+    window.alert(
+      error.message ||
+        'Não foi possível salvar o cenário. Corrija os dados do caso de teste no Salesforce e tente novamente.'
+    );
+  }
 });
 
 openUrlBtn.addEventListener('click', async () => {
   const url = normalizeUrl(urlInput.value.trim());
   if (!url) return;
-  await apiRequest('/api/navigate', {
-    method: 'POST',
-    body: JSON.stringify({ url }),
-  });
+  openUrlBtn.disabled = true;
+  try {
+    await apiRequest('/api/navigate', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    });
+  } catch (error) {
+    window.alert(error.message || 'Não foi possível abrir a URL.');
+  } finally {
+    openUrlBtn.disabled = false;
+  }
+});
+
+urlInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') openUrlBtn.click();
+});
+
+scenarioNameInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') saveScenarioBtn.click();
 });
 
 savedScenariosList.addEventListener('click', async (event) => {
@@ -1097,7 +1781,7 @@ savedScenariosList.addEventListener('click', async (event) => {
   }
 
   if (action === 'delete') {
-    await apiRequest(`/api/scenarios/${id}`, { method: 'DELETE' });
+    openDeleteScenarioModal(id);
   }
 });
 
@@ -1119,6 +1803,18 @@ queueList.addEventListener('click', async (event) => {
     await apiRequest(`/api/queue/${id}`, { method: 'DELETE' });
   }
 });
+
+if (savedScenarioClientFilter) {
+  savedScenarioClientFilter.addEventListener('change', () => {
+    if (savedScenarioProjectFilter) {
+      savedScenarioProjectFilter.value = '';
+    }
+    if (savedScenarioWorkFilter) {
+      savedScenarioWorkFilter.value = '';
+    }
+    renderSavedScenarios();
+  });
+}
 
 if (savedScenarioProjectFilter) {
   savedScenarioProjectFilter.addEventListener('change', () => {
@@ -1300,12 +1996,101 @@ if (scenarioStatusSave) {
 
       if (scenarioStatusInput) scenarioStatusInput.value = normalizedStatus;
       setScenarioStatusFeedback('Status atualizado com sucesso.', 'success');
+      if (normalizedStatus === 'Failed') {
+        await openFailedWorkModal(currentScenarioDetails);
+      } else if (failedWorkModal && !failedWorkModal.classList.contains('hidden')) {
+        closeFailedWorkModal();
+      }
     } catch (error) {
       setScenarioStatusFeedback(error.message || 'Falha ao atualizar status.', 'error');
     } finally {
       scenarioStatusSave.disabled = false;
       if (scenarioStatusInput) scenarioStatusInput.disabled = false;
     }
+  });
+}
+
+if (failedWorkCreate) {
+  failedWorkCreate.addEventListener('click', async () => {
+    const scenarioId = String(pendingFailedWorkContext?.scenarioId || '').trim();
+    if (!scenarioId) {
+      setFailedWorkStatus('Fluxo inválido. Atualize o status para Failed novamente.', 'error');
+      return;
+    }
+    const workName = typeof failedWorkNameInput?.value === 'string' ? failedWorkNameInput.value.trim() : '';
+    if (!workName) {
+      setFailedWorkStatus('Preencha o assunto da nova Work para continuar.', 'error');
+      return;
+    }
+    const description = typeof failedWorkDescriptionInput?.value === 'string'
+      ? failedWorkDescriptionInput.value.replace(/\r\n/g, '\n')
+      : '';
+    if (!description.trim()) {
+      setFailedWorkStatus('Preencha a descrição da falha para continuar.', 'error');
+      return;
+    }
+    const priority = normalizeFailedWorkPriority(failedWorkPriorityInput ? failedWorkPriorityInput.value : '');
+    if (!priority) {
+      setFailedWorkStatus('Selecione uma prioridade válida (P0, P1 ou P2).', 'error');
+      return;
+    }
+
+    setFailedWorkStatus('Criando Work relacionada no Salesforce...');
+    setFailedWorkControlsDisabled(true);
+
+    try {
+      const response = await apiRequest(`/api/scenarios/${scenarioId}/test-case/failed-work`, {
+        method: 'POST',
+        body: JSON.stringify({ name: workName, description, priority }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      const createdWork = payload?.work && typeof payload.work === 'object' ? payload.work : {};
+      const workId = String(createdWork.id || '').trim();
+      const idSuffix = workId ? ` (${workId})` : '';
+      const createdName = String(createdWork.name || workName).trim();
+      const nameSuffix = createdName ? ` ${createdName}` : '';
+      setFailedWorkStatus(`Work relacionada criada com sucesso:${nameSuffix}${idSuffix}.`, 'success');
+      setScenarioStatusFeedback(`Status atualizado e Work relacionada criada${idSuffix}.`, 'success');
+      if (payload?.template && typeof payload.template === 'object') {
+        renderFailedWorkSummary(payload.template);
+      }
+      window.setTimeout(() => {
+        closeFailedWorkModal();
+      }, 1200);
+    } catch (error) {
+      setFailedWorkStatus(error.message || 'Falha ao criar Work relacionada.', 'error');
+      setScenarioStatusFeedback(
+        'Status atualizado para Failed, mas a Work relacionada não foi criada.',
+        'error'
+      );
+    } finally {
+      if (!failedWorkModal || failedWorkModal.classList.contains('hidden')) return;
+      setFailedWorkControlsDisabled(false);
+    }
+  });
+}
+
+if (failedWorkClose) {
+  failedWorkClose.addEventListener('click', () => closeFailedWorkModal());
+}
+
+if (failedWorkCancel) {
+  failedWorkCancel.addEventListener('click', () => closeFailedWorkModal());
+}
+
+if (deleteScenarioCancel) {
+  deleteScenarioCancel.addEventListener('click', () => closeDeleteScenarioModal());
+}
+
+if (deleteScenarioLocal) {
+  deleteScenarioLocal.addEventListener('click', async () => {
+    await deletePendingScenario(false);
+  });
+}
+
+if (deleteScenarioCloud) {
+  deleteScenarioCloud.addEventListener('click', async () => {
+    await deletePendingScenario(true);
   });
 }
 
@@ -1320,11 +2105,114 @@ if (scenarioModal) {
   });
 }
 
+if (failedWorkModal) {
+  failedWorkModal.addEventListener('click', (event) => {
+    const closeTarget = event.target.closest('[data-action="close"]');
+    if (closeTarget) closeFailedWorkModal();
+  });
+}
+
+if (deleteScenarioModal) {
+  deleteScenarioModal.addEventListener('click', (event) => {
+    const closeTarget = event.target.closest('[data-action="close"]');
+    if (closeTarget) closeDeleteScenarioModal();
+  });
+}
+
+if (cloudImportClose) {
+  cloudImportClose.addEventListener('click', () => closeCloudImportModal());
+}
+
+if (cloudImportCancel) {
+  cloudImportCancel.addEventListener('click', () => closeCloudImportModal());
+}
+
+if (cloudImportRefresh) {
+  cloudImportRefresh.addEventListener('click', async () => {
+    try {
+      await loadCloudScenarios();
+    } catch (error) {
+      showCloudImportError(error);
+      window.alert(error.message || 'Falha ao atualizar casos da nuvem.');
+    }
+  });
+}
+
+if (cloudImportSelectAll) {
+  cloudImportSelectAll.addEventListener('click', () => selectAvailableCloudScenarios());
+}
+
+if (cloudImportConfirm) {
+  cloudImportConfirm.addEventListener('click', async () => {
+    cloudImportConfirm.disabled = true;
+    try {
+      await importSelectedCloudScenarios();
+    } catch (error) {
+      window.alert(error.message || 'Falha ao importar casos da nuvem.');
+    } finally {
+      updateCloudImportConfirmState();
+    }
+  });
+}
+
+if (cloudImportList) {
+  cloudImportList.addEventListener('change', (event) => {
+    if (event.target.matches('input[data-cloud-key]')) {
+      updateCloudImportConfirmState();
+    }
+  });
+}
+
+if (cloudImportModal) {
+  cloudImportModal.addEventListener('click', (event) => {
+    const closeTarget = event.target.closest('[data-action="close"]');
+    if (closeTarget) closeCloudImportModal();
+  });
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (cloudImportModal && !cloudImportModal.classList.contains('hidden')) {
+      closeCloudImportModal();
+      return;
+    }
+    if (deleteScenarioModal && !deleteScenarioModal.classList.contains('hidden')) {
+      closeDeleteScenarioModal();
+      return;
+    }
+    if (failedWorkModal && !failedWorkModal.classList.contains('hidden')) {
+      closeFailedWorkModal();
+      return;
+    }
+    if (!scenarioModal || scenarioModal.classList.contains('hidden')) return;
+    closeScenarioDetails();
+  });
+}
+
 const ws = new WebSocket(`ws://${window.location.host}`);
 ws.addEventListener('message', (event) => {
   const message = JSON.parse(event.data);
   if (message.type === 'state') {
+    if (!localStateHydrated) {
+      const localState = loadLocalState();
+      const hasLocalData = localState.savedScenarios.length > 0 || localState.queue.length > 0;
+      Object.assign(state, message.state);
+      if (hasLocalData) {
+        state.savedScenarios = localState.savedScenarios;
+        state.queue = localState.queue;
+        localStateHydrated = true;
+        render();
+        void hydrateServerFromLocalState();
+        return;
+      }
+      localStateHydrated = true;
+      persistLocalState();
+      render();
+      return;
+    }
     Object.assign(state, message.state);
+    persistLocalState();
     render();
     return;
   }
@@ -1366,4 +2254,5 @@ ws.addEventListener('message', (event) => {
   }
 });
 
+initializeTheme();
 setWorkspaceTab('main');
