@@ -13,6 +13,7 @@ const closeBtn = document.getElementById('closeBtn');
 const replayLastBtn = document.getElementById('replayLastBtn');
 const saveScenarioBtn = document.getElementById('saveScenarioBtn');
 const openUrlBtn = document.getElementById('openUrlBtn');
+const syncScenariosBtn = document.getElementById('syncScenariosBtn');
 const exportScenariosBtn = document.getElementById('exportScenariosBtn');
 const importScenariosBtn = document.getElementById('importScenariosBtn');
 const importScenariosInput = document.getElementById('importScenariosInput');
@@ -46,6 +47,12 @@ const failedWorkDescriptionInput = document.getElementById('failedWorkDescriptio
 const failedWorkPriorityInput = document.getElementById('failedWorkPriorityInput');
 const failedWorkCreate = document.getElementById('failedWorkCreate');
 const failedWorkStatus = document.getElementById('failedWorkStatus');
+const deleteScenarioModal = document.getElementById('deleteScenarioModal');
+const deleteScenarioName = document.getElementById('deleteScenarioName');
+const deleteScenarioStatus = document.getElementById('deleteScenarioStatus');
+const deleteScenarioLocal = document.getElementById('deleteScenarioLocal');
+const deleteScenarioCloud = document.getElementById('deleteScenarioCloud');
+const deleteScenarioCancel = document.getElementById('deleteScenarioCancel');
 
 const urlInput = document.getElementById('urlInput');
 const scenarioNameInput = document.getElementById('scenarioName');
@@ -83,6 +90,7 @@ const state = {
 let currentScenarioDetails = null;
 let currentScenarioRecordings = [];
 let pendingFailedWorkContext = null;
+let pendingDeleteScenarioId = null;
 let scenarioCompletionTimeout = null;
 const workspacePanels = {
   main: workspacePanelMain,
@@ -264,6 +272,60 @@ const closeFailedWorkModal = () => {
   setFailedWorkStatus('');
   setFailedWorkControlsDisabled(false);
 };
+const setDeleteScenarioStatus = (message, tone = '') => {
+  if (!deleteScenarioStatus) return;
+  deleteScenarioStatus.textContent = message || '';
+  deleteScenarioStatus.className = 'hint description-status';
+  if (tone === 'success' || tone === 'error') {
+    deleteScenarioStatus.classList.add(tone);
+  }
+};
+const setDeleteScenarioControlsDisabled = (disabled) => {
+  if (deleteScenarioLocal) deleteScenarioLocal.disabled = disabled;
+  if (deleteScenarioCloud) deleteScenarioCloud.disabled = disabled;
+  if (deleteScenarioCancel) deleteScenarioCancel.disabled = disabled;
+};
+const closeDeleteScenarioModal = () => {
+  if (!deleteScenarioModal) return;
+  deleteScenarioModal.classList.add('hidden');
+  deleteScenarioModal.setAttribute('aria-hidden', 'true');
+  pendingDeleteScenarioId = null;
+  if (deleteScenarioName) deleteScenarioName.textContent = '';
+  setDeleteScenarioStatus('');
+  setDeleteScenarioControlsDisabled(false);
+};
+const openDeleteScenarioModal = (scenarioId) => {
+  if (!deleteScenarioModal) return;
+  const scenario = state.savedScenarios.find((item) => item.id === scenarioId);
+  if (!scenario) return;
+  pendingDeleteScenarioId = scenarioId;
+  if (deleteScenarioName) {
+    deleteScenarioName.textContent = scenario.name ? `Caso: ${scenario.name}` : '';
+  }
+  setDeleteScenarioStatus('');
+  setDeleteScenarioControlsDisabled(false);
+  deleteScenarioModal.classList.remove('hidden');
+  deleteScenarioModal.setAttribute('aria-hidden', 'false');
+};
+const deletePendingScenario = async (deleteCloud) => {
+  const scenarioId = String(pendingDeleteScenarioId || '').trim();
+  if (!scenarioId) return;
+  setDeleteScenarioControlsDisabled(true);
+  setDeleteScenarioStatus(
+    deleteCloud ? 'Removendo caso local e registro da nuvem...' : 'Removendo caso apenas localmente...'
+  );
+  try {
+    await apiRequest(`/api/scenarios/${scenarioId}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ deleteCloud }),
+    });
+    setDeleteScenarioStatus('Caso removido com sucesso.', 'success');
+    closeDeleteScenarioModal();
+  } catch (error) {
+    setDeleteScenarioStatus(error.message || 'Falha ao remover o caso.', 'error');
+    setDeleteScenarioControlsDisabled(false);
+  }
+};
 const openFailedWorkModal = async (scenario) => {
   if (!failedWorkModal) return;
   const scenarioId = String(scenario?.id || '').trim();
@@ -356,10 +418,41 @@ const renderScenarioDescription = (scenario) => {
   setScenarioStatusFeedback('');
   setScenarioDescriptionStatus('');
 };
-const scenarioTestCaseId = (scenario) => String(scenario?.testCase?.id || '').trim();
-const scenarioClientName = (scenario) => String(scenario?.testCase?.clientName || '').trim();
-const scenarioProjectName = (scenario) => String(scenario?.testCase?.projectName || '').trim();
-const scenarioWorkName = (scenario) => String(scenario?.testCase?.workName || '').trim();
+const LOCAL_CLIENT_LABEL = 'Local';
+const LOCAL_PROJECT_LABEL = 'Sem projeto';
+const LOCAL_WORK_LABEL = 'Sem work';
+const scenarioHasTestCase = (scenario) => Boolean(String(scenario?.testCase?.id || '').trim());
+const scenarioTestCaseId = (scenario) => {
+  const testCaseId = String(scenario?.testCase?.id || '').trim();
+  return testCaseId || (scenario?.id ? `local:${scenario.id}` : '');
+};
+const scenarioClientName = (scenario) =>
+  String(scenario?.testCase?.clientName || '').trim() || LOCAL_CLIENT_LABEL;
+const scenarioProjectName = (scenario) =>
+  String(scenario?.testCase?.projectName || '').trim() || LOCAL_PROJECT_LABEL;
+const scenarioWorkName = (scenario) =>
+  String(scenario?.testCase?.workName || '').trim() || LOCAL_WORK_LABEL;
+const scenarioSyncState = (scenario) => {
+  if (scenario?.syncError) {
+    return {
+      label: 'Erro',
+      className: 'sync-error',
+      title: scenario.syncError,
+    };
+  }
+  if (scenario?.CasoSincronizado === true) {
+    return {
+      label: 'Sincronizado',
+      className: 'sync-ok',
+      title: scenario.syncedAt ? `Sincronizado em ${new Date(scenario.syncedAt).toLocaleString()}` : '',
+    };
+  }
+  return {
+    label: 'Pendente',
+    className: 'sync-pending',
+    title: 'Caso ainda não sincronizado com a nuvem.',
+  };
+};
 const scenarioFilterOptions = (scenarios, resolver) => {
   return [...new Set((scenarios || []).map(resolver).filter(Boolean))].sort((a, b) =>
     a.localeCompare(b, 'pt-BR', { sensitivity: 'base' })
@@ -447,12 +540,16 @@ const groupedTestCases = (scenarios) => {
     const testCaseId = scenarioTestCaseId(scenario);
     if (!testCaseId) return;
     const testCase = scenario.testCase || {};
+    const hasTestCase = scenarioHasTestCase(scenario);
     const current = byTestCase.get(testCaseId);
     if (!current) {
       byTestCase.set(testCaseId, {
         id: testCaseId,
-        name: String(testCase.name || '').trim(),
-        status: String(testCase.status || '').trim(),
+        isLocal: !hasTestCase,
+        name: String(testCase.name || scenario.name || '').trim(),
+        status: String(
+          testCase.status || (scenario.CasoSincronizado ? 'Sincronizado' : 'Pendente')
+        ).trim(),
         clientName: scenarioClientName(scenario),
         projectName: scenarioProjectName(scenario),
         workName: scenarioWorkName(scenario),
@@ -688,6 +785,11 @@ const updateButtons = () => {
   replayLastBtn.disabled = !state.lastRecording || isRecording || isPaused || isReplaying;
   saveScenarioBtn.disabled = !state.lastRecording;
   if (exportScenariosBtn) exportScenariosBtn.disabled = state.savedScenarios.length === 0;
+  if (syncScenariosBtn) {
+    syncScenariosBtn.disabled =
+      state.savedScenarios.length === 0 ||
+      !state.savedScenarios.some((scenario) => scenario.CasoSincronizado !== true);
+  }
 
   const queueRunning = state.queueStatus?.running;
   const queuePaused = state.queueStatus?.paused;
@@ -855,7 +957,7 @@ const renderSavedScenarios = () => {
   if (!linkedScenarios.length) {
     const empty = document.createElement('div');
     empty.className = 'list-item empty-state';
-    empty.textContent = 'Nenhum cenário com caso de teste Salesforce e cliente vinculado ainda.';
+    empty.textContent = 'Nenhum cenário salvo ainda.';
     savedScenariosList.appendChild(empty);
     return;
   }
@@ -905,12 +1007,18 @@ const renderSavedScenarios = () => {
         const extendLabel = isExtendActive ? 'Cancelar extensão' : 'Estender';
         const extendDisabled =
           state.status === 'Recording' || state.status === 'Paused' || state.status === 'Replaying';
+        const syncState = scenarioSyncState(scenario);
+        const syncTitle = syncState.title ? ` title="${escapeHtml(syncState.title)}"` : '';
+        const syncErrorText = scenario.syncError ? ` · ${scenario.syncError}` : '';
         return `
           <div class="case-scenario-row">
-            <div class="title">${escapeHtml(scenario.name)}</div>
+            <div class="case-scenario-title">
+              <div class="title">${escapeHtml(scenario.name)}</div>
+              <span class="sync-chip ${syncState.className}"${syncTitle}>${syncState.label}</span>
+            </div>
             <div class="meta">${
               Number.isFinite(Number(scenario.eventCount)) ? Number(scenario.eventCount) : 0
-            } eventos · ${formatDuration(scenario.duration)}</div>
+            } eventos · ${formatDuration(scenario.duration)}${escapeHtml(syncErrorText)}</div>
             <div class="scenario-actions">
               <button data-action="run" data-id="${scenario.id}">Executar</button>
               <button data-action="queue" data-id="${scenario.id}">Enviar à fila</button>
@@ -922,7 +1030,7 @@ const renderSavedScenarios = () => {
               <button data-action="evidence" data-id="${scenario.id}">Evidência</button>
               <button data-action="details" data-id="${scenario.id}">Detalhes</button>
               <button data-action="rename" data-id="${scenario.id}">Renomear</button>
-              <button data-action="delete" data-id="${scenario.id}">Remover</button>
+              <button data-action="delete" data-id="${scenario.id}" class="danger">Remover</button>
             </div>
           </div>
         `;
@@ -930,10 +1038,11 @@ const renderSavedScenarios = () => {
       .join('');
     const item = document.createElement('div');
     item.className = 'list-item';
+    const sourceMeta = testCase.isLocal ? 'Origem: Local' : `ID: ${testCase.id}`;
     item.innerHTML = `
       <div class="title">${escapeHtml(testCase.name || 'Caso sem nome')}</div>
       <div class="meta">${escapeHtml(
-        `ID: ${testCase.id} · Status: ${statusLabel} · Cliente: ${testCase.clientName || '—'} · Projeto: ${
+        `${sourceMeta} · Status: ${statusLabel} · Cliente: ${testCase.clientName || '—'} · Projeto: ${
           testCase.projectName || '—'
         } · Work: ${testCase.workName || '—'}`
       )}</div>
@@ -1123,6 +1232,33 @@ const importScenarios = async (file) => {
   });
 };
 
+const syncScenarios = async () => {
+  if (!syncScenariosBtn) return;
+  const originalText = syncScenariosBtn.textContent;
+  syncScenariosBtn.disabled = true;
+  syncScenariosBtn.textContent = 'Sincronizando...';
+  try {
+    const response = await apiRequest('/api/scenarios/sync', { method: 'POST' });
+    const payload = await response.json().catch(() => ({}));
+    if (!payload.pending) {
+      window.alert('Nenhum caso pendente para sincronizar.');
+      return;
+    }
+    if (payload.failed) {
+      window.alert(
+        `${payload.synced || 0} caso(s) sincronizado(s), ${payload.failed} com falha. Verifique os casos marcados com erro.`
+      );
+      return;
+    }
+    window.alert(`${payload.synced || 0} caso(s) sincronizado(s) com sucesso.`);
+  } catch (error) {
+    window.alert(error.message || 'Falha ao sincronizar casos.');
+  } finally {
+    syncScenariosBtn.textContent = originalText;
+    updateButtons();
+  }
+};
+
 const normalizeUrl = (value) => {
   if (!value) return '';
   if (/^https?:\/\//i.test(value)) return value;
@@ -1134,21 +1270,47 @@ const getReplayUrlOverride = () => {
   return value ? normalizeUrl(value) : '';
 };
 const shouldRecordVideo = () => Boolean(state.recordVideoEnabled);
+const runButtonAction = async (button, action, fallbackMessage) => {
+  if (button) button.disabled = true;
+  try {
+    await action();
+  } catch (error) {
+    window.alert(error.message || fallbackMessage || 'Falha na operação.');
+  } finally {
+    updateButtons();
+  }
+};
 
 startBtn.addEventListener('click', async () => {
-  await apiRequest('/api/recording/start', { method: 'POST' });
+  await runButtonAction(
+    startBtn,
+    () => apiRequest('/api/recording/start', { method: 'POST' }),
+    'Não foi possível iniciar a gravação.'
+  );
 });
 
 pauseBtn.addEventListener('click', async () => {
-  await apiRequest('/api/recording/pause', { method: 'POST' });
+  await runButtonAction(
+    pauseBtn,
+    () => apiRequest('/api/recording/pause', { method: 'POST' }),
+    'Não foi possível pausar a gravação.'
+  );
 });
 
 resumeBtn.addEventListener('click', async () => {
-  await apiRequest('/api/recording/resume', { method: 'POST' });
+  await runButtonAction(
+    resumeBtn,
+    () => apiRequest('/api/recording/resume', { method: 'POST' }),
+    'Não foi possível retomar a gravação.'
+  );
 });
 
 stopBtn.addEventListener('click', async () => {
-  await apiRequest('/api/recording/stop', { method: 'POST' });
+  await runButtonAction(
+    stopBtn,
+    () => apiRequest('/api/recording/stop', { method: 'POST' }),
+    'Não foi possível finalizar a gravação.'
+  );
 });
 
 exportBtn.addEventListener('click', async () => {
@@ -1158,6 +1320,12 @@ exportBtn.addEventListener('click', async () => {
 if (exportScenariosBtn) {
   exportScenariosBtn.addEventListener('click', async () => {
     await downloadScenarios();
+  });
+}
+
+if (syncScenariosBtn) {
+  syncScenariosBtn.addEventListener('click', async () => {
+    await syncScenarios();
   });
 }
 
@@ -1252,10 +1420,17 @@ saveScenarioBtn.addEventListener('click', async () => {
 openUrlBtn.addEventListener('click', async () => {
   const url = normalizeUrl(urlInput.value.trim());
   if (!url) return;
-  await apiRequest('/api/navigate', {
-    method: 'POST',
-    body: JSON.stringify({ url }),
-  });
+  openUrlBtn.disabled = true;
+  try {
+    await apiRequest('/api/navigate', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    });
+  } catch (error) {
+    window.alert(error.message || 'Não foi possível abrir a URL.');
+  } finally {
+    openUrlBtn.disabled = false;
+  }
 });
 
 urlInput.addEventListener('keydown', (e) => {
@@ -1341,7 +1516,7 @@ savedScenariosList.addEventListener('click', async (event) => {
   }
 
   if (action === 'delete') {
-    await apiRequest(`/api/scenarios/${id}`, { method: 'DELETE' });
+    openDeleteScenarioModal(id);
   }
 });
 
@@ -1638,6 +1813,22 @@ if (failedWorkCancel) {
   failedWorkCancel.addEventListener('click', () => closeFailedWorkModal());
 }
 
+if (deleteScenarioCancel) {
+  deleteScenarioCancel.addEventListener('click', () => closeDeleteScenarioModal());
+}
+
+if (deleteScenarioLocal) {
+  deleteScenarioLocal.addEventListener('click', async () => {
+    await deletePendingScenario(false);
+  });
+}
+
+if (deleteScenarioCloud) {
+  deleteScenarioCloud.addEventListener('click', async () => {
+    await deletePendingScenario(true);
+  });
+}
+
 if (scenarioModalClose) {
   scenarioModalClose.addEventListener('click', () => closeScenarioDetails());
 }
@@ -1656,9 +1847,20 @@ if (failedWorkModal) {
   });
 }
 
+if (deleteScenarioModal) {
+  deleteScenarioModal.addEventListener('click', (event) => {
+    const closeTarget = event.target.closest('[data-action="close"]');
+    if (closeTarget) closeDeleteScenarioModal();
+  });
+}
+
 if (typeof document !== 'undefined') {
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    if (deleteScenarioModal && !deleteScenarioModal.classList.contains('hidden')) {
+      closeDeleteScenarioModal();
+      return;
+    }
     if (failedWorkModal && !failedWorkModal.classList.contains('hidden')) {
       closeFailedWorkModal();
       return;

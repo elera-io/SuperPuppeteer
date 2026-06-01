@@ -21,6 +21,19 @@ const DATA_DIR = path.join(__dirname, '.data');
 const SCENARIOS_FILE = path.join(DATA_DIR, 'scenarios.json');
 const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings');
 const RECORDINGS_INDEX_FILE = path.join(DATA_DIR, 'recordings-index.json');
+const SCENARIO_CLOUD_MIRROR_FILE = path.join(DATA_DIR, 'cloud-scenarios.json');
+const SCENARIO_CLOUD_SYNC_URL =
+  typeof process.env.SCENARIO_CLOUD_SYNC_URL === 'string'
+    ? process.env.SCENARIO_CLOUD_SYNC_URL.trim()
+    : '';
+const SCENARIO_CLOUD_DELETE_URL =
+  typeof process.env.SCENARIO_CLOUD_DELETE_URL === 'string'
+    ? process.env.SCENARIO_CLOUD_DELETE_URL.trim()
+    : '';
+const SCENARIO_CLOUD_API_KEY =
+  typeof process.env.SCENARIO_CLOUD_API_KEY === 'string'
+    ? process.env.SCENARIO_CLOUD_API_KEY.trim()
+    : '';
 const SALESFORCE_TARGET_ORG = process.env.SALESFORCE_TARGET_ORG || 'Elera';
 const SALESFORCE_ACCEPTANCE_OBJECT = 'agf__ADM_Acceptance_Criterion__c';
 const SALESFORCE_WORK_OBJECT = 'agf__ADM_Work__c';
@@ -100,6 +113,25 @@ const normalizeOptionalText = (value) => {
   if (typeof value !== 'string') return null;
   const normalized = value.replace(/\r\n/g, '\n');
   return normalized.length ? normalized : null;
+};
+const normalizeSyncMetadata = (item = {}) => ({
+  CasoSincronizado: asBoolean(item.CasoSincronizado),
+  cloudId: normalizeOptionalString(item.cloudId || item.CloudId || item.nuvemId),
+  syncedAt: normalizeOptionalString(item.syncedAt || item.SyncedAt),
+  syncError: normalizeOptionalString(item.syncError || item.SyncError),
+});
+const markScenarioPendingSync = (scenario, syncError = null) => {
+  if (!scenario) return;
+  scenario.CasoSincronizado = false;
+  scenario.syncedAt = null;
+  scenario.syncError = normalizeOptionalString(syncError);
+};
+const markScenarioSynced = (scenario, result = {}) => {
+  if (!scenario) return;
+  scenario.CasoSincronizado = true;
+  scenario.cloudId = normalizeOptionalString(result.cloudId) || scenario.cloudId || scenario.id;
+  scenario.syncedAt = nowIso();
+  scenario.syncError = null;
 };
 const quoteWindowsShellArg = (value) => {
   const normalized = String(value ?? '');
@@ -592,6 +624,7 @@ const syncTestCaseDescription = (testCaseId, description) => {
   state.savedScenarios.forEach((scenario) => {
     if (!scenario?.testCase || scenario.testCase.id !== testCaseId) return;
     scenario.testCase.description = normalizedDescription;
+    markScenarioPendingSync(scenario);
   });
   return normalizedDescription;
 };
@@ -600,6 +633,7 @@ const syncTestCaseStatus = (testCaseId, status) => {
   state.savedScenarios.forEach((scenario) => {
     if (!scenario?.testCase || scenario.testCase.id !== testCaseId) return;
     scenario.testCase.status = normalizedStatus;
+    markScenarioPendingSync(scenario);
   });
   return normalizedStatus;
 };
@@ -624,6 +658,7 @@ const loadScenarios = () => {
         duration: item.duration || 0,
         startUrl: item.startUrl || null,
         testCase: extractScenarioTestCase(item),
+        ...normalizeSyncMetadata(item),
       }));
     if (Array.isArray(queueList)) {
       state.queue = queueList
@@ -655,6 +690,177 @@ const saveScenarios = () => {
       2
     )
   );
+};
+
+const cloudHeaders = () => {
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  if (SCENARIO_CLOUD_API_KEY) {
+    headers.Authorization = `Bearer ${SCENARIO_CLOUD_API_KEY}`;
+  }
+  return headers;
+};
+
+const cloneScenarioForCloud = (scenario) => {
+  const payload = JSON.parse(JSON.stringify(scenario || {}));
+  payload.localId = scenario?.id || payload.localId || null;
+  payload.CasoSincronizado = asBoolean(scenario?.CasoSincronizado);
+  return payload;
+};
+
+const loadCloudMirror = () => {
+  try {
+    if (!fs.existsSync(SCENARIO_CLOUD_MIRROR_FILE)) return [];
+    const raw = fs.readFileSync(SCENARIO_CLOUD_MIRROR_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    const list = Array.isArray(parsed) ? parsed : parsed?.scenarios;
+    return Array.isArray(list) ? list : [];
+  } catch (error) {
+    return [];
+  }
+};
+
+const saveCloudMirror = (items) => {
+  ensureDataDir();
+  fs.writeFileSync(
+    SCENARIO_CLOUD_MIRROR_FILE,
+    JSON.stringify(
+      {
+        updatedAt: nowIso(),
+        scenarios: Array.isArray(items) ? items : [],
+      },
+      null,
+      2
+    )
+  );
+};
+
+const syncScenarioToLocalMirror = async (scenario) => {
+  const mirror = loadCloudMirror();
+  const cloudId = normalizeOptionalString(scenario.cloudId) || `cloud_${scenario.id}`;
+  const payload = {
+    ...cloneScenarioForCloud(scenario),
+    cloudId,
+    CasoSincronizado: true,
+    syncedAt: nowIso(),
+  };
+  const index = mirror.findIndex(
+    (item) => item.cloudId === cloudId || item.localId === scenario.id || item.id === scenario.id
+  );
+  if (index === -1) {
+    mirror.push(payload);
+  } else {
+    mirror[index] = {
+      ...mirror[index],
+      ...payload,
+    };
+  }
+  saveCloudMirror(mirror);
+  return {
+    cloudId,
+    provider: 'local-mirror',
+  };
+};
+
+const syncScenarioToHttpCloud = async (scenario) => {
+  const response = await fetch(SCENARIO_CLOUD_SYNC_URL, {
+    method: 'POST',
+    headers: cloudHeaders(),
+    body: JSON.stringify({
+      scenario: cloneScenarioForCloud(scenario),
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = salesforceErrorMessage(payload, `HTTP ${response.status}`);
+    const error = new Error(`Falha ao sincronizar o caso "${scenario.name}": ${detail}`);
+    error.statusCode = response.status >= 500 ? 502 : response.status;
+    throw error;
+  }
+  return {
+    cloudId:
+      normalizeOptionalString(payload.cloudId) ||
+      normalizeOptionalString(payload.id) ||
+      normalizeOptionalString(payload.scenario?.cloudId) ||
+      normalizeOptionalString(payload.scenario?.id) ||
+      scenario.cloudId ||
+      scenario.id,
+    provider: 'http',
+  };
+};
+
+const syncScenarioToCloud = async (scenario) => {
+  if (SCENARIO_CLOUD_SYNC_URL) {
+    return syncScenarioToHttpCloud(scenario);
+  }
+  return syncScenarioToLocalMirror(scenario);
+};
+
+const resolveCloudDeleteUrl = (scenario) => {
+  const baseUrl = SCENARIO_CLOUD_DELETE_URL || SCENARIO_CLOUD_SYNC_URL;
+  if (!baseUrl) return '';
+  const cloudId = encodeURIComponent(scenario.cloudId || scenario.id);
+  if (baseUrl.includes('{cloudId}')) return baseUrl.replace('{cloudId}', cloudId);
+  if (baseUrl.includes('{id}')) return baseUrl.replace('{id}', cloudId);
+  return `${baseUrl.replace(/\/+$/, '')}/${cloudId}`;
+};
+
+const deleteScenarioFromLocalMirror = async (scenario) => {
+  const mirror = loadCloudMirror();
+  const targetIds = new Set(
+    [scenario.cloudId, `cloud_${scenario.id}`, scenario.id].map(normalizeOptionalString).filter(Boolean)
+  );
+  const nextMirror = mirror.filter((item) => {
+    const itemIds = [item.cloudId, item.localId, item.id].map(normalizeOptionalString).filter(Boolean);
+    return !itemIds.some((id) => targetIds.has(id));
+  });
+  saveCloudMirror(nextMirror);
+  return {
+    ok: true,
+    provider: 'local-mirror',
+    removed: mirror.length !== nextMirror.length,
+  };
+};
+
+const deleteScenarioFromHttpCloud = async (scenario) => {
+  const url = resolveCloudDeleteUrl(scenario);
+  if (!url) {
+    const error = new Error('Endpoint de exclusão na nuvem não configurado.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: cloudHeaders(),
+    body: JSON.stringify({
+      cloudId: scenario.cloudId || null,
+      localId: scenario.id,
+      scenario: cloneScenarioForCloud(scenario),
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = salesforceErrorMessage(payload, `HTTP ${response.status}`);
+    const error = new Error(`Falha ao remover o caso "${scenario.name}" da nuvem: ${detail}`);
+    error.statusCode = response.status >= 500 ? 502 : response.status;
+    throw error;
+  }
+  return {
+    ok: true,
+    provider: 'http',
+  };
+};
+
+const deleteScenarioFromCloud = async (scenario) => {
+  if (!scenario) return { ok: true, skipped: true };
+  if (!asBoolean(scenario.CasoSincronizado) && !normalizeOptionalString(scenario.cloudId)) {
+    return { ok: true, skipped: true };
+  }
+  if (SCENARIO_CLOUD_SYNC_URL || SCENARIO_CLOUD_DELETE_URL) {
+    return deleteScenarioFromHttpCloud(scenario);
+  }
+  return deleteScenarioFromLocalMirror(scenario);
 };
 
 const normalizeRecordingsIndexEntry = (entry) => {
@@ -805,6 +1011,10 @@ const scenarioSummary = (scenario) => ({
   createdAt: scenario.createdAt,
   duration: scenario.duration,
   eventCount: scenario.events.length,
+  CasoSincronizado: asBoolean(scenario.CasoSincronizado),
+  cloudId: scenario.cloudId || null,
+  syncedAt: scenario.syncedAt || null,
+  syncError: scenario.syncError || null,
   testCase: scenario.testCase
     ? {
         id: scenario.testCase.id,
@@ -1725,6 +1935,90 @@ const attachBrowserListeners = (browser) => {
   browser.on('targetchanged', handleTarget);
 };
 
+const chromeProfileLockPaths = () => [
+  path.join(PROFILE_DIR, 'SingletonLock'),
+  path.join(PROFILE_DIR, 'SingletonCookie'),
+  path.join(PROFILE_DIR, 'SingletonSocket'),
+  path.join(PROFILE_DIR, 'DevToolsActivePort'),
+];
+
+const readChromeProfileOwnerPid = () => {
+  try {
+    const lockTarget = fs.readlinkSync(path.join(PROFILE_DIR, 'SingletonLock'));
+    const match = String(lockTarget || '').match(/-(\d+)$/);
+    const pid = match ? Number(match[1]) : NaN;
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch (error) {
+    return null;
+  }
+};
+
+const processIsAlive = (pid) => {
+  if (!pid || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return false;
+  }
+};
+
+const waitForProcessExit = async (pid, timeoutMs = 2400) => {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (!processIsAlive(pid)) return true;
+    await sleep(120);
+  }
+  return !processIsAlive(pid);
+};
+
+const clearChromeProfileLocks = () => {
+  chromeProfileLockPaths().forEach((filePath) => {
+    try {
+      fs.rmSync(filePath, { force: true });
+    } catch (error) {
+      // ignore stale lock cleanup errors
+    }
+  });
+};
+
+const closeStaleChromeProfileOwner = async () => {
+  const pid = readChromeProfileOwnerPid();
+  if (pid && processIsAlive(pid)) {
+    process.kill(pid, 'SIGTERM');
+    const exited = await waitForProcessExit(pid);
+    if (!exited && processIsAlive(pid)) {
+      process.kill(pid, 'SIGKILL');
+      await waitForProcessExit(pid, 1200);
+    }
+  }
+  clearChromeProfileLocks();
+};
+
+const isChromeProfileInUseError = (error) => {
+  const message = String(error?.message || error || '');
+  return (
+    message.includes('browser is already running') ||
+    message.includes('userDataDir') ||
+    message.includes('SingletonLock')
+  );
+};
+
+const launchManagedBrowser = async () =>
+  puppeteer.launch({
+    headless: false,
+    userDataDir: PROFILE_DIR,
+    defaultViewport: BROWSER_VIEWPORT,
+    args: [
+      `--window-size=${BROWSER_VIEWPORT.width},${BROWSER_VIEWPORT.height}`,
+      '--force-device-scale-factor=1',
+      '--high-dpi-support=1',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-session-crashed-bubble',
+    ],
+  });
+
 const ensureBrowser = async () => {
   if (state.browser && state.page && !state.page.isClosed()) {
     attachBrowserListeners(state.browser);
@@ -1740,19 +2034,14 @@ const ensureBrowser = async () => {
     }
   });
 
-  const browser = await puppeteer.launch({
-    headless: false,
-    userDataDir: PROFILE_DIR,
-    defaultViewport: BROWSER_VIEWPORT,
-    args: [
-      `--window-size=${BROWSER_VIEWPORT.width},${BROWSER_VIEWPORT.height}`,
-      '--force-device-scale-factor=1',
-      '--high-dpi-support=1',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-session-crashed-bubble',
-    ],
-  });
+  let browser;
+  try {
+    browser = await launchManagedBrowser();
+  } catch (error) {
+    if (!isChromeProfileInUseError(error)) throw error;
+    await closeStaleChromeProfileOwner();
+    browser = await launchManagedBrowser();
+  }
 
   state.browser = browser;
 
@@ -2754,6 +3043,7 @@ app.post('/api/recording/stop', async (req, res) => {
         if (!scenario.startUrl && state.currentRecording.startUrl) {
           scenario.startUrl = state.currentRecording.startUrl;
         }
+        markScenarioPendingSync(scenario);
         syncQueueScenario(scenario);
         saveScenarios();
       }
@@ -2808,6 +3098,10 @@ app.post('/api/scenarios/save', async (req, res) => {
       duration: state.lastRecording.duration,
       startUrl: state.lastRecording.startUrl,
       testCase,
+      CasoSincronizado: false,
+      cloudId: null,
+      syncedAt: null,
+      syncError: null,
     };
     state.savedScenarios.push(scenario);
     saveScenarios();
@@ -2816,6 +3110,49 @@ app.post('/api/scenarios/save', async (req, res) => {
   } catch (error) {
     return res.status(Number(error.statusCode) || 500).json({ error: error.message });
   }
+});
+
+app.post('/api/scenarios/sync', async (req, res) => {
+  const pendingScenarios = state.savedScenarios.filter((scenario) => !asBoolean(scenario.CasoSincronizado));
+  const results = [];
+
+  for (const scenario of pendingScenarios) {
+    try {
+      const result = await syncScenarioToCloud(scenario);
+      markScenarioSynced(scenario, result);
+      results.push({
+        id: scenario.id,
+        name: scenario.name,
+        ok: true,
+        cloudId: scenario.cloudId,
+        provider: result.provider,
+      });
+    } catch (error) {
+      const detail = normalizeOptionalString(error.message) || 'Falha desconhecida na sincronização.';
+      scenario.CasoSincronizado = false;
+      scenario.syncError = detail;
+      results.push({
+        id: scenario.id,
+        name: scenario.name,
+        ok: false,
+        error: detail,
+      });
+    }
+  }
+
+  saveScenarios();
+  broadcastState();
+
+  const synced = results.filter((item) => item.ok).length;
+  const failed = results.filter((item) => !item.ok).length;
+  return res.json({
+    ok: failed === 0,
+    pending: pendingScenarios.length,
+    synced,
+    failed,
+    provider: SCENARIO_CLOUD_SYNC_URL ? 'http' : 'local-mirror',
+    results,
+  });
 });
 
 app.get('/api/scenarios/:id', async (req, res) => {
@@ -2858,6 +3195,7 @@ app.post('/api/scenarios/:id/inputs', async (req, res) => {
     event.customValue = String(update.customValue);
   });
 
+  markScenarioPendingSync(scenario);
   saveScenarios();
   broadcastState();
   return res.json({ ok: true });
@@ -3025,6 +3363,7 @@ app.post('/api/scenarios/:id/rename', async (req, res) => {
   const name = String(req.body?.name || '').trim();
   if (!name) return res.status(400).json({ error: 'Nome inválido.' });
   scenario.name = name;
+  markScenarioPendingSync(scenario);
   syncQueueScenario(scenario);
   saveScenarios();
   broadcastState();
@@ -3042,6 +3381,10 @@ app.post('/api/scenarios/:id/duplicate', async (req, res) => {
     duration: scenario.duration,
     startUrl: scenario.startUrl,
     testCase: scenario.testCase ? { ...scenario.testCase } : null,
+    CasoSincronizado: false,
+    cloudId: null,
+    syncedAt: null,
+    syncError: null,
   };
   state.savedScenarios.push(copy);
   saveScenarios();
@@ -3079,6 +3422,18 @@ app.delete('/api/scenarios/:id', async (req, res) => {
   const index = state.savedScenarios.findIndex((scenario) => scenario.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'Cenário não encontrado.' });
 
+  const deleteCloud = asBoolean(req.body?.deleteCloud);
+  const scenario = state.savedScenarios[index];
+  if (deleteCloud) {
+    try {
+      await deleteScenarioFromCloud(scenario);
+    } catch (error) {
+      return res.status(Number(error.statusCode) || 502).json({
+        error: error.message || 'Falha ao remover o caso da nuvem.',
+      });
+    }
+  }
+
   const [removed] = state.savedScenarios.splice(index, 1);
   if (removed) {
     state.queue = state.queue.filter((item) => item.scenarioId !== removed.id);
@@ -3087,7 +3442,7 @@ app.delete('/api/scenarios/:id', async (req, res) => {
   }
   saveScenarios();
   broadcastState();
-  return res.json({ ok: true });
+  return res.json({ ok: true, deletedCloud: deleteCloud });
 });
 
 app.get('/api/scenarios/export', async (req, res) => {
@@ -3112,6 +3467,7 @@ app.post('/api/scenarios/import', async (req, res) => {
       duration: item.duration || 0,
       startUrl: item.startUrl || null,
       testCase: extractScenarioTestCase(item),
+      ...normalizeSyncMetadata(item),
     }));
   state.queue = [];
   state.queueCursor = 0;

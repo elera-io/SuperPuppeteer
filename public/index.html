@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div class="app">
@@ -125,6 +125,7 @@
             <button id="saveScenarioBtn" title="Salva a última gravação como cenário reutilizável (Enter)">Salvar</button>
           </div>
           <div class="button-row">
+            <button id="syncScenariosBtn" class="primary" title="Envia para a nuvem apenas os casos pendentes">Sincronizar Casos</button>
             <button id="exportScenariosBtn" title="Exporta todos os cenários salvos como JSON">Exportar cenários</button>
             <button id="importScenariosBtn" title="Importa cenários a partir de um arquivo JSON">Importar cenários</button>
             <input id="importScenariosInput" type="file" accept="application/json" hidden />
@@ -232,7 +233,7 @@
                 <option value="">Selecione o work</option>
               </select>
             </div>
-            <p class="hint">Selecione Cliente, depois Projeto e por fim Work para visualizar os casos de teste vinculados.</p>
+            <p class="hint">Cenários locais sem Salesforce aparecem como Local, Sem projeto e Sem work.</p>
             <div id="savedScenariosList" class="list"></div>
           </div>
         </div>
@@ -301,6 +302,29 @@
         </div>
       </div>
 
+      <div class="modal hidden" id="deleteScenarioModal" aria-hidden="true">
+        <div class="modal-backdrop" data-action="close"></div>
+        <div class="modal-card modal-card-compact">
+          <div class="modal-header">
+            <div>
+              <h2>Remover caso de teste</h2>
+              <p class="hint" id="deleteScenarioName"></p>
+            </div>
+          </div>
+          <div class="modal-body">
+            <p>Deseja também remover este caso da nuvem?</p>
+            <p id="deleteScenarioStatus" class="hint description-status"></p>
+          </div>
+          <div class="modal-actions modal-actions-spread">
+            <button id="deleteScenarioCancel" type="button">Cancelar</button>
+            <div class="button-row">
+              <button id="deleteScenarioLocal" type="button">Remover apenas local</button>
+              <button id="deleteScenarioCloud" class="danger" type="button">Remover local e nuvem</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="modal hidden" id="failedWorkModal" aria-hidden="true">
         <div class="modal-backdrop" data-action="close"></div>
         <div class="modal-card modal-card-compact">
@@ -346,6 +370,6 @@
       </div>
     </div>
 
-    <script src="/app.js"></script>
+    <script src="app.js"></script>
   </body>
 </html>

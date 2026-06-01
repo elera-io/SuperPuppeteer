@@ -16,7 +16,7 @@ Leia este arquivo primeiro antes de abrir `server.js` inteiro.
 - Frontend estatico: `public/index.html`, `public/app.js`, `public/styles.css`.
 - Script npm disponivel: `npm start` (`node server.js`).
 - Porta: `process.env.PORT || 3000`.
-- Objetivo: gravar interacoes no browser, replay de fluxo, salvar cenarios, executar fila, integrar com Salesforce para dados de caso de teste.
+- Objetivo: gravar interacoes no browser, replay de fluxo, salvar cenarios locais/offline, sincronizar casos pendentes com nuvem, executar fila, integrar com Salesforce para dados de caso de teste.
 
 ## Estrutura de Pastas e Arquivos
 
@@ -25,9 +25,11 @@ Leia este arquivo primeiro antes de abrir `server.js` inteiro.
 - `public/app.js`: logica de UI, chamadas para API, websocket, renderizacao de listas/modais.
 - `public/styles.css`: tema claro/escuro e layout.
 - `.data/scenarios.json`: persistencia de cenarios e fila.
+- `.data/cloud-scenarios.json`: espelho local de desenvolvimento usado quando `SCENARIO_CLOUD_SYNC_URL` nao esta configurada.
 - `.data/recordings/`: arquivos de video `.webm` do replay.
 - `.data/recordings-index.json`: indice/metadata das execucoes gravadas.
 - `.user-data/chrome-profile/`: perfil do Chrome gerenciado pelo Puppeteer.
+- Se o servidor reiniciar e sobrar um Chrome orfao com esse perfil, `ensureBrowser()` tenta encerrar o dono do `SingletonLock` e relancar.
 
 ## Como Executar
 
@@ -51,9 +53,14 @@ Abrir no navegador:
 http://localhost:3000
 ```
 
+Nao abrir a UI pelo Live Server (`127.0.0.1:5500`): os botoes dependem das APIs e do WebSocket servidos pelo `server.js`.
+
 ## Variaveis de Ambiente
 
 - `PORT`: porta HTTP (default `3000`).
+- `SCENARIO_CLOUD_SYNC_URL`: endpoint HTTP externo para sincronizar casos; se ausente, usa `.data/cloud-scenarios.json`.
+- `SCENARIO_CLOUD_DELETE_URL`: endpoint HTTP opcional para excluir casos na nuvem; aceita `{cloudId}` ou `{id}` como placeholder.
+- `SCENARIO_CLOUD_API_KEY`: token opcional enviado como `Authorization: Bearer`.
 - `SALESFORCE_TARGET_ORG`: org alvo do `sf` CLI (default `Elera`).
 - Tambem sao usados internamente no processo do `sf`: `SF_DISABLE_LOG_FILE`, `SF_LOG_LEVEL`, `NO_COLOR`, `CI`.
 
@@ -61,6 +68,7 @@ Exemplo PowerShell:
 
 ```powershell
 $env:PORT=3001
+$env:SCENARIO_CLOUD_SYNC_URL="https://api.exemplo.com/casos"
 $env:SALESFORCE_TARGET_ORG="Elera"
 npm start
 ```
@@ -77,7 +85,8 @@ npm start
    - por cenario (`/api/scenarios/:id/run`),
    - fila (`/api/queue/*`).
 5. Opcional: gravar video no replay; arquivos vao para `.data/recordings`.
-6. Integracao Salesforce para caso de teste (descricao/status/work relacionada failed).
+6. Usuario pode clicar em "Sincronizar Casos" para enviar apenas cenarios com `CasoSincronizado: false`.
+7. Integracao Salesforce para caso de teste (descricao/status/work relacionada failed).
 
 ## Estado em Memoria (Backend)
 
@@ -87,6 +96,16 @@ Campos principais de `state`:
 - browser: `browser`, `page`, `recordingEnabled`
 - cenarios/fila: `savedScenarios`, `queue`, `queueRunning`, `queuePaused`, `queueCursor`, `extendScenarioId`
 - replay: `replayLog`, `queueRecordVideo`
+
+## Persistencia e Sync de Cenarios
+
+- Cada cenario salvo possui `CasoSincronizado`, `cloudId`, `syncedAt` e `syncError`.
+- Novo cenario e duplicata sempre iniciam com `CasoSincronizado: false`.
+- Cenarios antigos sem o campo sao carregados como pendentes (`false`).
+- Cenarios sem caso Salesforce aparecem na aba Casos como `Local > Sem projeto > Sem work`.
+- Edicoes locais relevantes (inputs, rename, extensao, status/descricao Salesforce refletidos no cenario) voltam o cenario para pendente.
+- `POST /api/scenarios/sync` envia somente pendentes. Sucesso marca `CasoSincronizado: true`.
+- Exclusao de cenario recebe `deleteCloud`; se `true`, tenta remover na nuvem antes de remover local.
 
 ## API REST (Mapa Rapido)
 
@@ -104,13 +123,14 @@ Campos principais de `state`:
 ## Cenarios
 
 - `POST /api/scenarios/save`
+- `POST /api/scenarios/sync`
 - `GET /api/scenarios/:id`
 - `POST /api/scenarios/:id/run`
 - `POST /api/scenarios/:id/rename`
 - `POST /api/scenarios/:id/duplicate`
 - `POST /api/scenarios/:id/extend`
 - `POST /api/scenarios/:id/move`
-- `DELETE /api/scenarios/:id`
+- `DELETE /api/scenarios/:id` (`body.deleteCloud` controla exclusao na nuvem)
 - `GET /api/scenarios/:id/export`
 - `GET /api/scenarios/export`
 - `POST /api/scenarios/import`
@@ -168,4 +188,3 @@ Antes de encerrar uma tarefa que altere codigo:
 3. Atualizei variaveis de ambiente/pre-requisitos?
 4. Atualizei persistencia (`.data`/arquivos) se mudou formato?
 5. Mantive este arquivo curto e util para leitura rapida por IA?
-

@@ -680,6 +680,12 @@ textarea {
   background: color-mix(in srgb, var(--surface-subtle) 80%, transparent);
 }
 
+.scenario-actions button.danger {
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface-subtle));
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+  color: color-mix(in srgb, var(--danger) 72%, var(--text-main));
+}
+
 .case-scenarios {
   display: grid;
   gap: 8px;
@@ -697,6 +703,45 @@ textarea {
 
 .case-scenario-row .title {
   font-size: 0.88rem;
+}
+
+.case-scenario-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sync-chip {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 4px 9px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--stroke-soft);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.sync-chip.sync-ok {
+  color: color-mix(in srgb, var(--success) 72%, var(--text-main));
+  border-color: color-mix(in srgb, var(--success) 48%, transparent);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+}
+
+.sync-chip.sync-pending {
+  color: color-mix(in srgb, var(--warning) 76%, var(--text-main));
+  border-color: color-mix(in srgb, var(--warning) 50%, transparent);
+  background: color-mix(in srgb, var(--warning) 13%, transparent);
+}
+
+.sync-chip.sync-error {
+  color: color-mix(in srgb, var(--danger) 76%, var(--text-main));
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+  background: color-mix(in srgb, var(--danger) 13%, transparent);
 }
 
 .modal {
