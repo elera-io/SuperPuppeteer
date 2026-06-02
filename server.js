@@ -7,6 +7,7 @@ const { promisify } = require('util');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer');
 const { Pool } = require('pg');
+const schedule = require('node-schedule');
 
 const loadDotEnv = () => {
   const envPath = path.join(__dirname, '.env');
@@ -3767,3 +3768,29 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`UI disponível em http://localhost:${PORT}`);
 });
+
+const job = schedule.scheduleJob('* 30 1 * * *', function(){
+// const job = schedule.scheduleJob('*/90 * * * * *', async function(){
+  console.log('Executando testes...');
+  console.debug('Fila:', {
+    queueLength: state.queue.length,
+    queueCursor: state.queueCursor,
+    queueRunning: state.queueRunning,
+    queuePaused: state.queuePaused,
+  });
+  // Executa todos os cenários da fila
+  for (let i = 0; i < state.queue.length; i += 1){
+    const item = state.queue[i];
+    const scenario = findScenario(item.scenarioId);
+    console.debug(`Executando cenário ${item.name} (ID: ${item.scenarioId})`);
+    if (scenario) {
+      await replayRecording(scenario, {}).catch(() => {
+        console.error(`Falha ao executar cenário ${item.name} (ID: ${item.scenarioId})`);
+      });
+    } else {
+      console.warn(`Cenário de ID ${item.scenarioId} não foi encontrado durante execução de testes.`);
+    }
+  }
+});
+
+job.invoke();
