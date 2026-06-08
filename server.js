@@ -3784,7 +3784,7 @@ const job = schedule.scheduleJob('* 30 1 * * *', function(){
     const scenario = findScenario(item.scenarioId);
     console.debug(`Executando cenário ${item.name} (ID: ${item.scenarioId})`);
     if (scenario) {
-      await replayRecording(scenario, {}).catch(() => {
+      replayRecording(scenario, {}).catch(() => {
         console.error(`Falha ao executar cenário ${item.name} (ID: ${item.scenarioId})`);
       });
     } else {
