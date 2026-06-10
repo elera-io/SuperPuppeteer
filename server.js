@@ -206,7 +206,7 @@ const runSalesforceCli = async (args, options = {}) => {
     const commandLine = [quoteWindowsShellArg(command), ...resolvedArgs.map(quoteWindowsShellArg)].join(' ');
     return execAsync(commandLine, resolvedOptions);
   }
-
+  // console.debug('Execução:',command, resolvedArgs.join(' '), { ...resolvedOptions, env: 'REDACTED' });
   return execFileAsync(command, resolvedArgs, resolvedOptions);
 };
 const normalizeAcceptanceStatus = (value) => {
@@ -705,6 +705,7 @@ const loadScenarios = () => {
           name: item.name || item.scenario?.name || 'Cenário',
           duration: item.duration || item.scenario?.duration || 0,
           eventCount: item.eventCount || item.scenario?.events?.length || 0,
+          status: item.status || 'Pendente',
         }))
         .filter((item) => item.scenarioId);
     }
@@ -3769,28 +3770,41 @@ server.listen(PORT, () => {
   console.log(`UI disponível em http://localhost:${PORT}`);
 });
 
-const job = schedule.scheduleJob('* 30 1 * * *', function(){
 // const job = schedule.scheduleJob('*/90 * * * * *', async function(){
-  console.log('Executando testes...');
-  console.debug('Fila:', {
-    queueLength: state.queue.length,
-    queueCursor: state.queueCursor,
-    queueRunning: state.queueRunning,
-    queuePaused: state.queuePaused,
+const job = schedule.scheduleJob('* 30 1 * * *', async function () {
+  ensureBrowser().then(() => { sleep(2000) }).catch(() => {
+    console.error('Falha ao iniciar o navegador para execução da fila de cenários.');
+    return;
   });
+  console.log('Executando fila de cenários...');
+  const queue = state.queue.filter((item) => item.status === 'Pendente');
+  console.debug(queue);
   // Executa todos os cenários da fila
-  for (let i = 0; i < state.queue.length; i += 1){
+  for (let i = 0; i < queue.length; i += 1){
     const item = state.queue[i];
     const scenario = findScenario(item.scenarioId);
-    console.debug(`Executando cenário ${item.name} (ID: ${item.scenarioId})`);
+    console.debug(`Executando cenário ${item.name}, ID: ${item.scenarioId}, (${i+1}/${state.queue.length})`);
     if (scenario) {
-      replayRecording(scenario, {}).catch(() => {
+      await replayRecording(scenario, {}).then(() => {
+        console.debug(`Cenário ${item.name} (ID: ${item.scenarioId}) executado com sucesso.`);
+        scenario.status = 'Sucesso';
+      }).catch(() => {
         console.error(`Falha ao executar cenário ${item.name} (ID: ${item.scenarioId})`);
+        scenario.status = 'Erro';
       });
     } else {
       console.warn(`Cenário de ID ${item.scenarioId} não foi encontrado durante execução de testes.`);
     }
   }
+  await sleep(5000); // Se tiver 0 cenários pode ser que o browser não esteja aberto ainda.
+  console.log('Cenários executados, salvando...');
+  saveScenarios();
+  if (state.browser) await state.browser.close();
+  state.browser = null;
+  state.page = null;
+  state.status = 'Idle';
+  state.recordingEnabled = false;
 });
 
+// Executa os testes na inicialização do servidor.
 job.invoke();
