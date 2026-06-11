@@ -3235,11 +3235,6 @@ app.post('/api/local-state/hydrate', async (req, res) => {
   const scenarios = Array.isArray(req.body?.savedScenarios) ? req.body.savedScenarios : [];
   const queue = Array.isArray(req.body?.queue) ? req.body.queue : [];
 
-  console.log(`Hydrate queue = ${queue}`);
-  for(const item of queue){
-    console.log(item);
-  };
-
   state.savedScenarios = scenarios
     .filter((item) => item && Array.isArray(item.events))
     .map((item, index) => ({
@@ -3790,7 +3785,7 @@ server.listen(PORT, () => {
 
 // const job = schedule.scheduleJob('*/90 * * * * *', async function(){
 const job = schedule.scheduleJob('* 30 1 * * *', async function () {
-  ensureBrowser();
+  await ensureBrowser();
   console.log('Executando fila de cenários...');
   const pending_queue = state.queue.filter((item) => item.status !== 'Sucesso');
   // Executa todos os cenários da fila
