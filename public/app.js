@@ -23,6 +23,7 @@ const recordVideoToggle = document.getElementById('recordVideoToggle');
 const queueRunBtn = document.getElementById('queueRunBtn');
 const queuePauseBtn = document.getElementById('queuePauseBtn');
 const queueResumeBtn = document.getElementById('queueResumeBtn');
+const execCasesBtn = document.getElementById('execCasesBtn');
 const scenarioModal = document.getElementById('scenarioModal');
 const scenarioModalTitle = document.getElementById('scenarioModalTitle');
 const scenarioModalClose = document.getElementById('scenarioModalClose');
@@ -1149,7 +1150,7 @@ const renderQueue = () => {
     row.className = 'list-item';
     row.innerHTML = `
       <div class="title">${index + 1}. ${item.name}</div>
-      <div class="meta">${item.eventCount} eventos · ${formatDuration(item.duration)}</div>
+      <div class="meta">${item.eventCount} eventos · ${formatDuration(item.duration)} · Status: ${item.status || 'Pendente'}</div>
       <div class="scenario-actions">
         <button data-action="up" data-id="${item.id}">Subir</button>
         <button data-action="down" data-id="${item.id}">Descer</button>
@@ -1660,6 +1661,16 @@ if (queueResumeBtn) {
     await apiRequest('/api/queue/resume', {
       method: 'POST',
       body: JSON.stringify({ overrideUrl, recordVideo: shouldRecordVideo() }),
+    });
+  });
+}
+
+if (execCasesBtn) {
+  execCasesBtn.addEventListener('click', async () => {
+    const overrideUrl = getReplayUrlOverride();
+    await apiRequest('/api/cases/execute', {
+      method: 'POST',
+      body: JSON.stringify({}),
     });
   });
 }
@@ -2193,6 +2204,7 @@ if (typeof document !== 'undefined') {
 const ws = new WebSocket(`ws://${window.location.host}`);
 ws.addEventListener('message', (event) => {
   const message = JSON.parse(event.data);
+  console.debug('Received message:', message);
   if (message.type === 'state') {
     if (!localStateHydrated) {
       const localState = loadLocalState();

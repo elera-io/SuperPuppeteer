@@ -7,6 +7,7 @@ const { promisify } = require('util');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer');
 const { Pool } = require('pg');
+const schedule = require('node-schedule');
 
 const loadDotEnv = () => {
   const envPath = path.join(__dirname, '.env');
@@ -172,6 +173,12 @@ const quoteWindowsShellArg = (value) => {
   const normalized = String(value ?? '');
   return `"${normalized.replace(/"/g, '""')}"`;
 };
+
+const getQueueItemStatus = (id) => {
+  const item = state.queue.find((q) => q.id === id);
+  return item ? item.status : 'Pendente';
+};
+
 const resolveSalesforceCliCommand = () => {
   if (process.platform !== 'win32') return 'sf';
   for (const candidate of SALESFORCE_CLI_CANDIDATES) {
@@ -205,7 +212,7 @@ const runSalesforceCli = async (args, options = {}) => {
     const commandLine = [quoteWindowsShellArg(command), ...resolvedArgs.map(quoteWindowsShellArg)].join(' ');
     return execAsync(commandLine, resolvedOptions);
   }
-
+  // console.debug('Execução:',command, resolvedArgs.join(' '), { ...resolvedOptions, env: 'REDACTED' });
   return execFileAsync(command, resolvedArgs, resolvedOptions);
 };
 const normalizeAcceptanceStatus = (value) => {
@@ -698,12 +705,14 @@ const loadScenarios = () => {
     if (Array.isArray(queueList)) {
       state.queue = queueList
         .filter((item) => item && (item.scenarioId || item.scenario))
-        .map((item) => ({
+        .map((item) => (  
+        {
           id: item.id || generateId('q'),
           scenarioId: item.scenarioId || item.scenario?.id || null,
           name: item.name || item.scenario?.name || 'Cenário',
           duration: item.duration || item.scenario?.duration || 0,
           eventCount: item.eventCount || item.scenario?.events?.length || 0,
+          status: item.status || 'Pendente',
         }))
         .filter((item) => item.scenarioId);
     }
@@ -714,6 +723,8 @@ const loadScenarios = () => {
 
 const saveScenarios = () => {
   ensureDataDir();
+  // console.log(`Stacktrace: ${new Error().stack}`);
+  // console.log(`Scen = ${JSON.stringify(state.queue)}`);
   fs.writeFileSync(
     SCENARIOS_FILE,
     JSON.stringify(
@@ -1841,7 +1852,8 @@ const waitForInteractionDelay = async (targetMs, options = {}, meta = {}) => {
 
 loadScenarios();
 
-const serializeState = () => ({
+const serializeState = () => (
+  {
   status: state.status,
   eventCount: state.eventCount,
   events: state.currentRecording ? state.currentRecording.events.slice(-200) : [],
@@ -1861,6 +1873,7 @@ const serializeState = () => ({
     name: item.name,
     duration: item.duration,
     eventCount: item.eventCount,
+    status: item.status,
   })),
   queueStatus: {
     running: state.queueRunning,
@@ -3242,6 +3255,7 @@ app.post('/api/local-state/hydrate', async (req, res) => {
       name: item.name || item.scenario?.name || 'Cenário',
       duration: item.duration || item.scenario?.duration || 0,
       eventCount: item.eventCount || item.scenario?.events?.length || 0,
+      status:  getQueueItemStatus(item.id) || item.status,
     }))
     .filter((item) => item.scenarioId && state.savedScenarios.some((scenario) => scenario.id === item.scenarioId));
   state.queueCursor = 0;
@@ -3678,6 +3692,7 @@ app.post('/api/queue/resume', async (req, res) => {
   return res.json({ ok: true });
 });
 
+
 app.post('/api/navigate', async (req, res) => {
   try {
     const url = String(req.body?.url || '').trim();
@@ -3767,3 +3782,48 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`UI disponível em http://localhost:${PORT}`);
 });
+
+// const job = schedule.scheduleJob('*/90 * * * * *', async function(){
+const job = schedule.scheduleJob('* 30 1 * * *', async function () {
+  await ensureBrowser();
+  console.log('Executando fila de cenários...');
+  const pending_queue = state.queue.filter((item) => item.status !== 'Sucesso');
+  // Executa todos os cenários da fila
+  for (let i = 0; i < pending_queue.length; i += 1){
+    const item = pending_queue[i];
+    const scenario = findScenario(item.scenarioId);
+    console.debug(`Executando cenário ${item.name}, ID: ${item.scenarioId}, (${i+1}/${state.queue.length})`);
+    if (scenario) {
+      await replayRecording(scenario, {}).then(() => {
+        console.debug(`Cenário ${item.name} (ID: ${item.scenarioId}) executado com sucesso.`);
+        item.status = 'Sucesso';
+      }).catch(() => {
+        console.error(`Falha ao executar cenário ${item.name} (ID: ${item.scenarioId})`);
+        item.status = 'Erro';
+      });
+    } else {
+      console.warn(`Cenário de ID ${item.scenarioId} não foi encontrado durante execução de testes.`);
+    }
+  }
+  await sleep(5000); // Se houverem 0 cenários pode ser que o browser ainda esteja abrindo.
+  console.log('Cenários executados, salvando...');
+  saveScenarios();
+  broadcastState();
+  if (state.browser) await state.browser.close();
+  state.browser = null;
+  state.page = null;
+  state.status = 'Idle';
+  state.recordingEnabled = false;
+});
+
+app.post('/api/cases/execute', async (req, res) => {
+  // Executa os cases no lado do server ()
+  try {
+    job.invoke();
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Executa os testes na inicialização do servidor.
+// job.invoke();
