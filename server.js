@@ -173,6 +173,12 @@ const quoteWindowsShellArg = (value) => {
   const normalized = String(value ?? '');
   return `"${normalized.replace(/"/g, '""')}"`;
 };
+
+const getQueueItemStatus = (id) => {
+  const item = state.queue.find((q) => q.id === id);
+  return item ? item.status : 'Pendente';
+};
+
 const resolveSalesforceCliCommand = () => {
   if (process.platform !== 'win32') return 'sf';
   for (const candidate of SALESFORCE_CLI_CANDIDATES) {
@@ -3229,6 +3235,11 @@ app.post('/api/local-state/hydrate', async (req, res) => {
   const scenarios = Array.isArray(req.body?.savedScenarios) ? req.body.savedScenarios : [];
   const queue = Array.isArray(req.body?.queue) ? req.body.queue : [];
 
+  console.log(`Hydrate queue = ${queue}`);
+  for(const item of queue){
+    console.log(item);
+  };
+
   state.savedScenarios = scenarios
     .filter((item) => item && Array.isArray(item.events))
     .map((item, index) => ({
@@ -3249,7 +3260,7 @@ app.post('/api/local-state/hydrate', async (req, res) => {
       name: item.name || item.scenario?.name || 'Cenário',
       duration: item.duration || item.scenario?.duration || 0,
       eventCount: item.eventCount || item.scenario?.events?.length || 0,
-      status:  item.status,
+      status:  item.status  || getQueueItemStatus(item.id),
     }))
     .filter((item) => item.scenarioId && state.savedScenarios.some((scenario) => scenario.id === item.scenarioId));
   state.queueCursor = 0;
