@@ -3772,25 +3772,24 @@ server.listen(PORT, () => {
 
 // const job = schedule.scheduleJob('*/90 * * * * *', async function(){
 const job = schedule.scheduleJob('* 30 1 * * *', async function () {
-  ensureBrowser().then(() => { sleep(2000) }).catch(() => {
+  ensureBrowser().catch(() => {
     console.error('Falha ao iniciar o navegador para execução da fila de cenários.');
     return;
-  });
+  }).then(() => { sleep(2000); });
   console.log('Executando fila de cenários...');
-  const queue = state.queue.filter((item) => item.status === 'Pendente');
-  console.debug(queue);
+  const pending_queue = state.queue.filter((item) => item.status === 'Pendente');
   // Executa todos os cenários da fila
-  for (let i = 0; i < queue.length; i += 1){
-    const item = state.queue[i];
+  for (let i = 0; i < pending_queue.length; i += 1){
+    const item = pending_queue[i];
     const scenario = findScenario(item.scenarioId);
     console.debug(`Executando cenário ${item.name}, ID: ${item.scenarioId}, (${i+1}/${state.queue.length})`);
     if (scenario) {
       await replayRecording(scenario, {}).then(() => {
         console.debug(`Cenário ${item.name} (ID: ${item.scenarioId}) executado com sucesso.`);
-        scenario.status = 'Sucesso';
+        item.status = 'Sucesso';
       }).catch(() => {
         console.error(`Falha ao executar cenário ${item.name} (ID: ${item.scenarioId})`);
-        scenario.status = 'Erro';
+        item.status = 'Erro';
       });
     } else {
       console.warn(`Cenário de ID ${item.scenarioId} não foi encontrado durante execução de testes.`);

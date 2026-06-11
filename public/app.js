@@ -1149,7 +1149,7 @@ const renderQueue = () => {
     row.className = 'list-item';
     row.innerHTML = `
       <div class="title">${index + 1}. ${item.name}</div>
-      <div class="meta">${item.eventCount} eventos · ${formatDuration(item.duration)}</div>
+      <div class="meta">${item.eventCount} eventos · ${formatDuration(item.duration)} · Status: ${item.status || 'Pendente'}</div>
       <div class="scenario-actions">
         <button data-action="up" data-id="${item.id}">Subir</button>
         <button data-action="down" data-id="${item.id}">Descer</button>
