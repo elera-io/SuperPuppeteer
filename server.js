@@ -3827,6 +3827,3 @@ app.post('/api/cases/execute', async (req, res) => {
 
 // Executa os testes na inicialização do servidor.
 // job.invoke();
-
-
-// TODO: precisa de uma função de replay server-side
