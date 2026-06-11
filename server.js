@@ -699,7 +699,8 @@ const loadScenarios = () => {
     if (Array.isArray(queueList)) {
       state.queue = queueList
         .filter((item) => item && (item.scenarioId || item.scenario))
-        .map((item) => ({
+        .map((item) => (  
+        {
           id: item.id || generateId('q'),
           scenarioId: item.scenarioId || item.scenario?.id || null,
           name: item.name || item.scenario?.name || 'Cenário',
@@ -716,6 +717,8 @@ const loadScenarios = () => {
 
 const saveScenarios = () => {
   ensureDataDir();
+  // console.log(`Stacktrace: ${new Error().stack}`);
+  // console.log(`Scen = ${JSON.stringify(state.queue)}`);
   fs.writeFileSync(
     SCENARIOS_FILE,
     JSON.stringify(
@@ -1843,7 +1846,8 @@ const waitForInteractionDelay = async (targetMs, options = {}, meta = {}) => {
 
 loadScenarios();
 
-const serializeState = () => ({
+const serializeState = () => (
+  {
   status: state.status,
   eventCount: state.eventCount,
   events: state.currentRecording ? state.currentRecording.events.slice(-200) : [],
@@ -1863,6 +1867,7 @@ const serializeState = () => ({
     name: item.name,
     duration: item.duration,
     eventCount: item.eventCount,
+    status: item.status,
   })),
   queueStatus: {
     running: state.queueRunning,
@@ -3244,6 +3249,7 @@ app.post('/api/local-state/hydrate', async (req, res) => {
       name: item.name || item.scenario?.name || 'Cenário',
       duration: item.duration || item.scenario?.duration || 0,
       eventCount: item.eventCount || item.scenario?.events?.length || 0,
+      status:  item.status,
     }))
     .filter((item) => item.scenarioId && state.savedScenarios.some((scenario) => scenario.id === item.scenarioId));
   state.queueCursor = 0;
@@ -3680,6 +3686,7 @@ app.post('/api/queue/resume', async (req, res) => {
   return res.json({ ok: true });
 });
 
+
 app.post('/api/navigate', async (req, res) => {
   try {
     const url = String(req.body?.url || '').trim();
@@ -3777,7 +3784,7 @@ const job = schedule.scheduleJob('* 30 1 * * *', async function () {
     return;
   }).then(() => { sleep(2000); });
   console.log('Executando fila de cenários...');
-  const pending_queue = state.queue.filter((item) => item.status === 'Pendente');
+  const pending_queue = state.queue.filter((item) => item.status !== 'Sucesso');
   // Executa todos os cenários da fila
   for (let i = 0; i < pending_queue.length; i += 1){
     const item = pending_queue[i];
@@ -3795,9 +3802,10 @@ const job = schedule.scheduleJob('* 30 1 * * *', async function () {
       console.warn(`Cenário de ID ${item.scenarioId} não foi encontrado durante execução de testes.`);
     }
   }
-  await sleep(5000); // Se tiver 0 cenários pode ser que o browser não esteja aberto ainda.
+  await sleep(5000); // Se houverem 0 cenários pode ser que o browser ainda esteja abrindo.
   console.log('Cenários executados, salvando...');
   saveScenarios();
+  broadcastState();
   if (state.browser) await state.browser.close();
   state.browser = null;
   state.page = null;
@@ -3805,5 +3813,17 @@ const job = schedule.scheduleJob('* 30 1 * * *', async function () {
   state.recordingEnabled = false;
 });
 
+app.post('/api/cases/execute', async (req, res) => {
+  // Executa os cases no lado do server ()
+  try {
+    job.invoke();
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 // Executa os testes na inicialização do servidor.
-job.invoke();
+// job.invoke();
+
+
+// TODO: precisa de uma função de replay server-side

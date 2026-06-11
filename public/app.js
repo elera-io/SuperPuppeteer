@@ -23,6 +23,7 @@ const recordVideoToggle = document.getElementById('recordVideoToggle');
 const queueRunBtn = document.getElementById('queueRunBtn');
 const queuePauseBtn = document.getElementById('queuePauseBtn');
 const queueResumeBtn = document.getElementById('queueResumeBtn');
+const execCasesBtn = document.getElementById('execCasesBtn');
 const scenarioModal = document.getElementById('scenarioModal');
 const scenarioModalTitle = document.getElementById('scenarioModalTitle');
 const scenarioModalClose = document.getElementById('scenarioModalClose');
@@ -1664,6 +1665,16 @@ if (queueResumeBtn) {
   });
 }
 
+if (execCasesBtn) {
+  execCasesBtn.addEventListener('click', async () => {
+    const overrideUrl = getReplayUrlOverride();
+    await apiRequest('/api/cases/execute', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  });
+}
+
 saveScenarioBtn.addEventListener('click', async () => {
   const name = scenarioNameInput.value.trim();
   const testCaseId = scenarioTestCaseIdInput ? scenarioTestCaseIdInput.value.trim() : '';
@@ -2193,6 +2204,7 @@ if (typeof document !== 'undefined') {
 const ws = new WebSocket(`ws://${window.location.host}`);
 ws.addEventListener('message', (event) => {
   const message = JSON.parse(event.data);
+  console.debug('Received message:', message);
   if (message.type === 'state') {
     if (!localStateHydrated) {
       const localState = loadLocalState();
