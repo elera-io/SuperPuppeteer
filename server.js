@@ -3260,7 +3260,7 @@ app.post('/api/local-state/hydrate', async (req, res) => {
       name: item.name || item.scenario?.name || 'Cenário',
       duration: item.duration || item.scenario?.duration || 0,
       eventCount: item.eventCount || item.scenario?.events?.length || 0,
-      status:  item.status  || getQueueItemStatus(item.id),
+      status:  getQueueItemStatus(item.id) || item.status,
     }))
     .filter((item) => item.scenarioId && state.savedScenarios.some((scenario) => scenario.id === item.scenarioId));
   state.queueCursor = 0;
