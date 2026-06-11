@@ -3790,10 +3790,7 @@ server.listen(PORT, () => {
 
 // const job = schedule.scheduleJob('*/90 * * * * *', async function(){
 const job = schedule.scheduleJob('* 30 1 * * *', async function () {
-  ensureBrowser().catch(() => {
-    console.error('Falha ao iniciar o navegador para execução da fila de cenários.');
-    return;
-  }).then(() => { sleep(2000); });
+  ensureBrowser();
   console.log('Executando fila de cenários...');
   const pending_queue = state.queue.filter((item) => item.status !== 'Sucesso');
   // Executa todos os cenários da fila
