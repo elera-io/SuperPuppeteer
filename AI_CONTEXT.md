@@ -37,7 +37,7 @@ Leia este arquivo primeiro antes de abrir `server.js` inteiro.
 
 - Node.js 18+ recomendado.
 - NPM.
-- PostgreSQL 16 local para o cluster em `.data/postgres` (inicializado com usuario/banco `superpuppeteer` na porta `5433`).
+- PostgreSQL acessivel pela rede Tailscale via `.env` local. Configuracao validada: host `100.80.233.118`, porta `5432`, usuario/banco `superpuppeteer`.
 - Ambiente com UI grafica (o fluxo abre navegador real via Puppeteer).
 
 ## Comandos
@@ -60,8 +60,12 @@ Nao abrir a UI pelo Live Server (`127.0.0.1:5500`): os botoes dependem das APIs 
 ## Variaveis de Ambiente
 
 - `PORT`: porta HTTP (default `3000`).
-- `DATABASE_URL`: conexao PostgreSQL para sincronizacao cloud (`postgres://usuario:senha@host:5432/superpuppeteer`).
+- `DATABASE_URL`: conexao PostgreSQL para sincronizacao cloud (`postgres://usuario:senha@host:5432/superpuppeteer`). Tem prioridade sobre as variaveis `PG*`.
 - Alternativa PostgreSQL: `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`.
+- Configuracao UAT via `.env` local: `PGHOST=100.80.233.118`, `PGPORT=5432`, `PGDATABASE=superpuppeteer`, `PGUSER=superpuppeteer`, `PGPASSWORD=superpuppeteer`.
+- `POSTGRES_DISABLED=true`: desativa a integracao PostgreSQL.
+- `POSTGRES_CONNECTION_TIMEOUT_MS`: timeout de conexao do PostgreSQL (default `5000`).
+- `POSTGRES_IDLE_TIMEOUT_MS`: timeout de conexao ociosa no pool (default `30000`).
 - `POSTGRES_SCENARIOS_TABLE`: tabela de destino (default `superpuppeteer_scenarios`).
 - `SALESFORCE_TARGET_ORG`: org alvo do `sf` CLI (default `Elera`).
 - Tambem sao usados internamente no processo do `sf`: `SF_DISABLE_LOG_FILE`, `SF_LOG_LEVEL`, `NO_COLOR`, `CI`.
@@ -70,7 +74,11 @@ Exemplo PowerShell:
 
 ```powershell
 $env:PORT=3001
-$env:DATABASE_URL="postgres://usuario:senha@localhost:5432/superpuppeteer"
+$env:PGHOST="100.80.233.118"
+$env:PGPORT="5432"
+$env:PGDATABASE="superpuppeteer"
+$env:PGUSER="superpuppeteer"
+$env:PGPASSWORD="superpuppeteer"
 $env:SALESFORCE_TARGET_ORG="Elera"
 npm start
 ```
@@ -78,8 +86,47 @@ npm start
 Configuracao local atual em `.env`:
 
 ```text
-DATABASE_URL=postgres://superpuppeteer:superpuppeteer@127.0.0.1:5433/superpuppeteer
+PGHOST=100.80.233.118
+PGPORT=5432
+PGDATABASE=superpuppeteer
+PGUSER=superpuppeteer
+PGPASSWORD=superpuppeteer
 POSTGRES_SCENARIOS_TABLE=superpuppeteer_scenarios
+```
+
+Endpoint de diagnostico do banco:
+
+```text
+GET /api/database/status
+```
+
+Esse endpoint conecta no PostgreSQL, garante/cria a tabela de cenarios, adiciona colunas faltantes quando a tabela ja existe e retorna as colunas encontradas. A tabela esperada e:
+
+```text
+superpuppeteer_scenarios
+```
+
+Colunas usadas para salvar/importar casos:
+
+```text
+cloud_id TEXT
+local_id TEXT
+name TEXT
+test_case_id TEXT
+client_name TEXT
+project_name TEXT
+work_name TEXT
+payload JSONB
+created_at TIMESTAMPTZ
+synced_at TIMESTAMPTZ
+updated_at TIMESTAMPTZ
+```
+
+Indices criados automaticamente:
+
+```text
+superpuppeteer_scenarios_cloud_id_uidx UNIQUE (cloud_id)
+superpuppeteer_scenarios_local_id_idx (local_id)
 ```
 
 Comandos uteis:

@@ -49,6 +49,8 @@ const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings');
 const RECORDINGS_INDEX_FILE = path.join(DATA_DIR, 'recordings-index.json');
 const DATABASE_URL =
   typeof process.env.DATABASE_URL === 'string' ? process.env.DATABASE_URL.trim() : '';
+const POSTGRES_CONNECTION_TIMEOUT_MS = Number(process.env.POSTGRES_CONNECTION_TIMEOUT_MS) || 5000;
+const POSTGRES_IDLE_TIMEOUT_MS = Number(process.env.POSTGRES_IDLE_TIMEOUT_MS) || 30000;
 const POSTGRES_TABLE =
   typeof process.env.POSTGRES_SCENARIOS_TABLE === 'string' && process.env.POSTGRES_SCENARIOS_TABLE.trim()
     ? process.env.POSTGRES_SCENARIOS_TABLE.trim()
@@ -107,22 +109,82 @@ const state = {
   recordingEnabled: false,
 };
 
-const postgresConfigured = Boolean(
+const envString = (key, fallback = '') => {
+  const value = process.env[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+};
+const parsePostgresPort = () => {
+  const value = Number(envString('PGPORT', '5432'));
+  return Number.isInteger(value) && value > 0 ? value : 5432;
+};
+const postgresDisabled = ['true', '1', 'yes', 'sim', 'on'].includes(
+  envString('POSTGRES_DISABLED').toLowerCase()
+);
+const resolvePostgresConfig = () => {
+  if (DATABASE_URL) {
+    return {
+      connectionString: DATABASE_URL,
+      connectionTimeoutMillis: POSTGRES_CONNECTION_TIMEOUT_MS,
+      idleTimeoutMillis: POSTGRES_IDLE_TIMEOUT_MS,
+    };
+  }
+  const config = {
+    host: envString('PGHOST'),
+    port: parsePostgresPort(),
+    database: envString('PGDATABASE'),
+    user: envString('PGUSER'),
+    connectionTimeoutMillis: POSTGRES_CONNECTION_TIMEOUT_MS,
+    idleTimeoutMillis: POSTGRES_IDLE_TIMEOUT_MS,
+  };
+  const password = envString('PGPASSWORD');
+  if (password) config.password = password;
+  return config;
+};
+const postgresPoolConfig = resolvePostgresConfig();
+const postgresConfigured = !postgresDisabled && Boolean(
   DATABASE_URL ||
-    process.env.PGHOST ||
-    process.env.PGDATABASE ||
-    process.env.PGUSER ||
-    process.env.PGPASSWORD
+    (postgresPoolConfig.host && postgresPoolConfig.database && postgresPoolConfig.user)
 );
 const postgresPool = postgresConfigured
-  ? new Pool(DATABASE_URL ? { connectionString: DATABASE_URL } : undefined)
+  ? new Pool(postgresPoolConfig)
   : null;
+const postgresConnectionInfo = () => {
+  if (DATABASE_URL) {
+    try {
+      const url = new URL(DATABASE_URL);
+      return {
+        host: url.hostname,
+        port: url.port || '5432',
+        database: url.pathname.replace(/^\//, '') || null,
+        user: decodeURIComponent(url.username || ''),
+        table: POSTGRES_TABLE,
+        source: 'DATABASE_URL',
+      };
+    } catch (error) {
+      return { source: 'DATABASE_URL', table: POSTGRES_TABLE };
+    }
+  }
+  return {
+    host: postgresPoolConfig.host,
+    port: postgresPoolConfig.port,
+    database: postgresPoolConfig.database,
+    user: postgresPoolConfig.user,
+    table: POSTGRES_TABLE,
+    source: 'PG* env',
+  };
+};
 const quoteSqlIdentifier = (value) =>
   `"${String(value || '').replace(/"/g, '""')}"`;
 const postgresScenarioTableSql = POSTGRES_TABLE
   .split('.')
   .map((part) => quoteSqlIdentifier(part.trim() || 'superpuppeteer_scenarios'))
   .join('.');
+const postgresCloudIdIndexSql = quoteSqlIdentifier(
+  `${POSTGRES_TABLE.replace(/\W+/g, '_')}_cloud_id_uidx`
+);
+const postgresLocalIdIndexSql = quoteSqlIdentifier(
+  `${POSTGRES_TABLE.replace(/\W+/g, '_')}_local_id_idx`
+);
 
 const ensureDataDir = () => {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -757,26 +819,76 @@ const ensurePostgresConfigured = () => {
 const ensurePostgresSchema = async () => {
   ensurePostgresConfigured();
   if (postgresSchemaReady) return;
-  await postgresPool.query(`
-    CREATE TABLE IF NOT EXISTS ${postgresScenarioTableSql} (
-      cloud_id TEXT PRIMARY KEY,
-      local_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      test_case_id TEXT,
-      client_name TEXT,
-      project_name TEXT,
-      work_name TEXT,
-      payload JSONB NOT NULL,
-      created_at TIMESTAMPTZ,
-      synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-  await postgresPool.query(`
-    CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier(`${POSTGRES_TABLE.replace(/\W+/g, '_')}_local_id_idx`)}
-    ON ${postgresScenarioTableSql} (local_id)
-  `);
+  const client = await postgresPool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ${postgresScenarioTableSql} (
+        cloud_id TEXT PRIMARY KEY,
+        local_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        test_case_id TEXT,
+        client_name TEXT,
+        project_name TEXT,
+        work_name TEXT,
+        payload JSONB NOT NULL,
+        created_at TIMESTAMPTZ,
+        synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      ALTER TABLE ${postgresScenarioTableSql}
+        ADD COLUMN IF NOT EXISTS cloud_id TEXT,
+        ADD COLUMN IF NOT EXISTS local_id TEXT,
+        ADD COLUMN IF NOT EXISTS name TEXT,
+        ADD COLUMN IF NOT EXISTS test_case_id TEXT,
+        ADD COLUMN IF NOT EXISTS client_name TEXT,
+        ADD COLUMN IF NOT EXISTS project_name TEXT,
+        ADD COLUMN IF NOT EXISTS work_name TEXT,
+        ADD COLUMN IF NOT EXISTS payload JSONB,
+        ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    `);
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ${postgresCloudIdIndexSql}
+      ON ${postgresScenarioTableSql} (cloud_id)
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS ${postgresLocalIdIndexSql}
+      ON ${postgresScenarioTableSql} (local_id)
+    `);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
   postgresSchemaReady = true;
+};
+const getPostgresSchemaStatus = async () => {
+  ensurePostgresConfigured();
+  const result = await postgresPool.query(
+    `
+      SELECT
+        a.attname AS column_name,
+        pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+        a.attnotnull AS not_null
+      FROM pg_attribute a
+      WHERE a.attrelid = to_regclass($1)
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+      ORDER BY a.attnum
+    `,
+    [POSTGRES_TABLE]
+  );
+  return {
+    table: POSTGRES_TABLE,
+    resolved: result.rows.length > 0,
+    columns: result.rows,
+  };
 };
 const syncScenarioToPostgres = async (scenario) => {
   await ensurePostgresSchema();
@@ -3227,6 +3339,31 @@ app.get('/api/scenarios/cloud', async (req, res) => {
   } catch (error) {
     return res.status(Number(error.statusCode) || 502).json({
       error: error.message || 'Falha ao carregar casos da nuvem.',
+    });
+  }
+});
+
+app.get('/api/database/status', async (req, res) => {
+  try {
+    ensurePostgresConfigured();
+    await ensurePostgresSchema();
+    const result = await postgresPool.query(
+      'SELECT current_database() AS database, current_user AS "user", inet_server_addr() AS host, inet_server_port() AS port, NOW() AS checked_at'
+    );
+    const schema = await getPostgresSchemaStatus();
+    return res.json({
+      ok: true,
+      provider: 'postgres',
+      connection: postgresConnectionInfo(),
+      database: result.rows?.[0] || null,
+      schema,
+    });
+  } catch (error) {
+    return res.status(Number(error.statusCode) || 502).json({
+      ok: false,
+      provider: 'postgres',
+      connection: postgresConnectionInfo(),
+      error: error.message || 'Falha ao conectar no PostgreSQL.',
     });
   }
 });
