@@ -207,6 +207,35 @@ const normalizeOptionalString = (value) => {
   const trimmed = value.trim();
   return trimmed || null;
 };
+const isPostgresConnectionTimeoutError = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    ['etimedout', 'esockettimedout'].includes(String(error?.code || '').toLowerCase()) ||
+    message.includes('connection timeout') ||
+    message.includes('timeout expired') ||
+    message.includes('connection terminated due to connection timeout')
+  );
+};
+const postgresErrorResponse = (error, fallbackMessage = 'Falha ao conectar no PostgreSQL.') => {
+  const timedOut = isPostgresConnectionTimeoutError(error);
+  const detail = normalizeOptionalString(error?.message);
+  return {
+    statusCode: Number(error?.statusCode) || (timedOut ? 504 : 502),
+    body: {
+      ok: false,
+      provider: 'postgres',
+      connection: postgresConnectionInfo(),
+      code: timedOut ? 'POSTGRES_CONNECTION_TIMEOUT' : 'POSTGRES_ERROR',
+      error: timedOut
+        ? 'Tempo esgotado ao conectar no PostgreSQL remoto.'
+        : detail || fallbackMessage,
+      detail,
+      hint: timedOut
+        ? 'Verifique se a VPN/Tailscale está conectada e se o host/porta do PostgreSQL estão acessíveis.'
+        : null,
+    },
+  };
+};
 const normalizeOptionalText = (value) => {
   if (typeof value !== 'string') return null;
   const normalized = value.replace(/\r\n/g, '\n');
@@ -3337,9 +3366,8 @@ app.get('/api/scenarios/cloud', async (req, res) => {
       scenarios: scenarios.map((scenario) => scenarioSummary(scenario)),
     });
   } catch (error) {
-    return res.status(Number(error.statusCode) || 502).json({
-      error: error.message || 'Falha ao carregar casos da nuvem.',
-    });
+    const response = postgresErrorResponse(error, 'Falha ao carregar casos da nuvem.');
+    return res.status(response.statusCode).json(response.body);
   }
 });
 
@@ -3359,12 +3387,8 @@ app.get('/api/database/status', async (req, res) => {
       schema,
     });
   } catch (error) {
-    return res.status(Number(error.statusCode) || 502).json({
-      ok: false,
-      provider: 'postgres',
-      connection: postgresConnectionInfo(),
-      error: error.message || 'Falha ao conectar no PostgreSQL.',
-    });
+    const response = postgresErrorResponse(error, 'Falha ao conectar no PostgreSQL.');
+    return res.status(response.statusCode).json(response.body);
   }
 });
 

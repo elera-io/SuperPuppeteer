@@ -1249,7 +1249,10 @@ const apiRequest = async (url, options = {}) => {
   });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw new Error(data.error || 'Erro na operação');
+    const error = new Error(data.error || 'Erro na operação');
+    error.status = response.status;
+    error.payload = data;
+    throw error;
   }
   return response;
 };
@@ -1437,6 +1440,29 @@ const loadCloudScenarios = async () => {
     : [];
   renderCloudImportList();
 };
+const formatCloudImportError = (error) => {
+  const payload = error?.payload || {};
+  const connection = payload.connection || {};
+  const host = String(connection.host || '').trim();
+  const port = String(connection.port || '').trim();
+  const address = host ? `${host}${port ? `:${port}` : ''}` : '';
+  const detail = String(payload.detail || error?.message || '').trim();
+  const isTimeout =
+    payload.code === 'POSTGRES_CONNECTION_TIMEOUT' ||
+    /connection timeout|timeout expired|tempo esgotado/i.test(detail);
+
+  if (isTimeout) {
+    return [
+      `Tempo esgotado ao conectar no PostgreSQL remoto${address ? ` (${address})` : ''}.`,
+      'Verifique se a VPN/Tailscale está conectada e se o banco está aceitando conexões nessa porta.',
+      connection.table ? `Tabela configurada: ${connection.table}.` : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+  }
+
+  return error?.message || 'Falha ao carregar casos da nuvem.';
+};
 const openCloudImportModal = async () => {
   if (!cloudImportModal) return;
   cloudImportModal.classList.remove('hidden');
@@ -1454,7 +1480,7 @@ const showCloudImportError = (error) => {
     cloudImportList.innerHTML = '';
     const item = document.createElement('div');
     item.className = 'list-item empty-state';
-    item.textContent = error?.message || 'Falha ao carregar casos da nuvem.';
+    item.textContent = formatCloudImportError(error);
     cloudImportList.appendChild(item);
   }
   if (cloudImportStatus) cloudImportStatus.textContent = 'Não foi possível consultar a nuvem.';
@@ -2144,7 +2170,7 @@ if (cloudImportRefresh) {
       await loadCloudScenarios();
     } catch (error) {
       showCloudImportError(error);
-      window.alert(error.message || 'Falha ao atualizar casos da nuvem.');
+      window.alert(formatCloudImportError(error));
     }
   });
 }

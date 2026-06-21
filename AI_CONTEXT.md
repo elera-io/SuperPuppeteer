@@ -173,6 +173,8 @@ Campos principais de `state`:
 - Edicoes locais relevantes (inputs, rename, extensao, status/descricao Salesforce refletidos no cenario) voltam o cenario para pendente.
 - `POST /api/scenarios/sync` envia somente pendentes para PostgreSQL. Sucesso marca `CasoSincronizado: true`.
 - Exclusao de cenario recebe `deleteCloud`; se `true`, tenta remover no PostgreSQL antes de remover local.
+- `GET /api/scenarios/cloud` lista cenarios salvos no PostgreSQL para o modal "Importar Casos da Nuvem".
+- Timeout de conexao com PostgreSQL em importacao/status retorna HTTP 504 com `code: POSTGRES_CONNECTION_TIMEOUT`, `connection` seguro (host/porta/tabela) e dica de VPN/Tailscale; a UI traduz isso para mensagem acionavel em portugues.
 
 ## API REST (Mapa Rapido)
 
@@ -191,6 +193,7 @@ Campos principais de `state`:
 
 - `POST /api/scenarios/save`
 - `POST /api/scenarios/sync`
+- `GET /api/scenarios/cloud`
 - `POST /api/local-state/hydrate`
 - `GET /api/scenarios/:id`
 - `POST /api/scenarios/:id/run`
