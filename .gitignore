@@ -9,3 +9,6 @@ node_modules/
 # Metadados locais
 .sfdx/
 .DS_Store
+
+# Credenciais Salesforce exportadas
+*-auth.json

@@ -74,6 +74,36 @@
             <input id="urlInput" type="text" placeholder="https://sua-aplicacao.com" aria-label="URL da aplicação alvo" />
             <button id="openUrlBtn" title="Abre a URL no Chrome gerenciado (Enter)">Abrir URL</button>
           </div>
+          <div id="orgConnection" class="org-connection">
+            <div class="org-connection-topline">
+              <span class="org-connection-title">Organização Salesforce</span>
+              <button id="importOrgAccessBtn" class="org-add-access-button" type="button" title="Adicionar acesso Salesforce">
+                Adicionar acesso
+              </button>
+            </div>
+            <button
+              id="orgSelectorBtn"
+              class="org-selector-button"
+              type="button"
+              aria-expanded="false"
+              aria-controls="orgOptions"
+            >
+              <span class="org-selector-status" aria-hidden="true"></span>
+              <span class="org-selector-copy">
+                <span class="org-selector-label">Conectar na org</span>
+                <span id="selectedOrgLabel" class="org-selector-value" aria-live="polite">Selecione uma organização</span>
+              </span>
+              <span class="org-selector-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div id="orgOptions" class="org-options hidden" aria-label="Organizações disponíveis">
+              <div class="org-options-header">
+                <p id="orgOptionsHeading" class="org-options-heading">Selecione o cliente</p>
+                <button id="orgBackToClientsBtn" class="org-back-button" type="button" hidden>Trocar cliente</button>
+              </div>
+              <div id="orgClientOptions" class="org-options-list" aria-live="polite"></div>
+              <div id="orgNameOptions" class="org-options-list" aria-live="polite" hidden></div>
+            </div>
+          </div>
           <p class="hint">Dica: prefira ambientes de homologação/UAT para registrar cenários de regressão.</p>
         </div>
 
@@ -347,6 +377,80 @@
           <div class="modal-actions modal-actions-spread">
             <button id="cloudImportCancel" type="button">Cancelar</button>
             <button id="cloudImportConfirm" class="primary" type="button">Importar selecionados</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal hidden" id="orgImportModal" aria-hidden="true">
+        <div class="modal-backdrop" data-action="close"></div>
+        <div class="modal-card modal-card-compact">
+          <div class="modal-header">
+            <div>
+              <h2>Adicionar acesso Salesforce</h2>
+              <p class="hint">Escolha o cliente, dê um nome para a org e conecte pelo JSON ou pelo login do Salesforce.</p>
+            </div>
+            <button id="orgImportClose" type="button">Fechar</button>
+          </div>
+          <div class="modal-body org-import-body">
+            <div class="org-import-section">
+              <span class="org-import-section-title">Forma de conexão</span>
+              <div class="org-import-methods" role="group" aria-label="Forma de conexão">
+                <label class="org-import-method">
+                  <input id="orgImportMethodJson" name="orgImportMethod" type="radio" value="json" checked />
+                  <span>
+                    <strong>Importar JSON</strong>
+                    <small>Use um arquivo exportado pelo Salesforce CLI.</small>
+                  </span>
+                </label>
+                <label class="org-import-method">
+                  <input id="orgImportMethodLogin" name="orgImportMethod" type="radio" value="login" />
+                  <span>
+                    <strong>Entrar pelo navegador</strong>
+                    <small>Abra o login interativo e salve o acesso.</small>
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            <div class="org-import-section">
+              <span class="org-import-section-title">Identificação</span>
+              <div class="org-import-grid">
+                <div class="org-import-field">
+                  <label class="field-label" for="orgImportClientSelect">Cliente / empresa</label>
+                  <select id="orgImportClientSelect">
+                    <option value="">Selecione o cliente</option>
+                    <option value="__new_client__">Cadastrar novo cliente…</option>
+                  </select>
+                </div>
+
+                <div class="org-import-field">
+                  <label class="field-label" for="orgImportOrgNameInput">Nome da org</label>
+                  <input id="orgImportOrgNameInput" type="text" maxlength="80" placeholder="Ex.: produção" />
+                </div>
+              </div>
+              <div id="orgImportNewClientField" hidden>
+                <label class="field-label" for="orgImportNewClientInput">Nome do novo cliente</label>
+                <input id="orgImportNewClientInput" type="text" maxlength="80" placeholder="Ex.: Emccamp" />
+              </div>
+            </div>
+
+            <div class="org-import-section">
+              <span class="org-import-section-title">Acesso</span>
+              <div id="orgImportFileGroup">
+                <label class="field-label" for="orgImportFileInput">Arquivo JSON de acesso</label>
+                <input id="orgImportFileInput" type="file" accept="application/json,.json" />
+              </div>
+              <div id="orgLoginInstanceField" hidden>
+                <label class="field-label" for="orgLoginInstanceInput">URL de login Salesforce</label>
+                <input id="orgLoginInstanceInput" type="url" placeholder="Padrão: https://test.salesforce.com" />
+              </div>
+            </div>
+            <p id="orgImportHelp" class="hint">O acesso é enviado diretamente ao Salesforce CLI e não é salvo no projeto.</p>
+            <p id="orgImportStatus" class="hint description-status" role="status"></p>
+          </div>
+          <div class="modal-actions modal-actions-spread">
+            <button id="orgImportCancel" type="button">Cancelar</button>
+            <button id="orgImportConfirm" class="primary" type="button">Importar e conectar</button>
           </div>
         </div>
       </div>
