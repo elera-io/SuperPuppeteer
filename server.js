@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
-const { exec, execFile } = require('child_process');
+const { exec, execFile, spawn } = require('child_process');
 const { promisify } = require('util');
 const { WebSocketServer } = require('ws');
 const puppeteer = require('puppeteer');
@@ -47,13 +47,14 @@ const DATA_DIR = path.join(__dirname, '.data');
 const SCENARIOS_FILE = path.join(DATA_DIR, 'scenarios.json');
 const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings');
 const RECORDINGS_INDEX_FILE = path.join(DATA_DIR, 'recordings-index.json');
+const SALESFORCE_ORGS_FILE = path.join(DATA_DIR, 'salesforce-orgs.json');
 const DATABASE_URL =
   typeof process.env.DATABASE_URL === 'string' ? process.env.DATABASE_URL.trim() : '';
 const POSTGRES_TABLE =
   typeof process.env.POSTGRES_SCENARIOS_TABLE === 'string' && process.env.POSTGRES_SCENARIOS_TABLE.trim()
     ? process.env.POSTGRES_SCENARIOS_TABLE.trim()
     : 'superpuppeteer_scenarios';
-const SALESFORCE_TARGET_ORG = process.env.SALESFORCE_TARGET_ORG || 'Elera';
+const DEFAULT_SALESFORCE_TARGET_ORG = process.env.SALESFORCE_TARGET_ORG || 'Elera';
 const SALESFORCE_ACCEPTANCE_OBJECT = 'agf__ADM_Acceptance_Criterion__c';
 const SALESFORCE_WORK_OBJECT = 'agf__ADM_Work__c';
 const SALESFORCE_ACCEPTANCE_FIELDS =
@@ -78,6 +79,25 @@ const BROWSER_VIEWPORT = {
   deviceScaleFactor: 1,
 };
 const SALESFORCE_CLI_MAX_BUFFER = 1024 * 1024;
+const SALESFORCE_CLI_TIMEOUT_MS = (() => {
+  const configured = Number.parseInt(process.env.SALESFORCE_CLI_TIMEOUT_MS, 10);
+  return Number.isInteger(configured) && configured >= 5000 && configured <= 120000
+    ? configured
+    : 60000;
+})();
+const SALESFORCE_WEB_LOGIN_TIMEOUT_MS = (() => {
+  const configured = Number.parseInt(process.env.SALESFORCE_WEB_LOGIN_TIMEOUT_MS, 10);
+  return Number.isInteger(configured) && configured >= 30000 && configured <= 600000
+    ? configured
+    : 300000;
+})();
+const DEFAULT_SALESFORCE_LOGIN_URL = 'https://test.salesforce.com';
+const SALESFORCE_ORG_ID_PATTERN = /^[a-zA-Z0-9_-]{1,120}$/;
+const SALESFORCE_ALIAS_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/;
+const BIND_HOST =
+  typeof process.env.BIND_HOST === 'string' && process.env.BIND_HOST.trim()
+    ? process.env.BIND_HOST.trim()
+    : '127.0.0.1';
 const SALESFORCE_CLI_CANDIDATES = (() => {
   const values = [];
   const localAppData =
@@ -89,6 +109,43 @@ const SALESFORCE_CLI_CANDIDATES = (() => {
   values.push('C:\\Program Files (x86)\\sf\\bin\\sf.cmd');
   return values;
 })();
+const DEFAULT_SALESFORCE_ORGS = [
+  {
+    id: 'builtin_emccamp_devmaster',
+    clientName: 'Emccamp',
+    orgName: 'devmaster',
+    alias: 'devmaster',
+    source: 'builtin',
+  },
+  {
+    id: 'builtin_emccamp_hm',
+    clientName: 'Emccamp',
+    orgName: 'HM',
+    alias: 'HM',
+    source: 'builtin',
+  },
+  {
+    id: 'builtin_plano_plano_eleradev',
+    clientName: 'Plano&Plano',
+    orgName: 'eleradev',
+    alias: 'eleradev',
+    source: 'builtin',
+  },
+  {
+    id: 'builtin_plano_plano_full',
+    clientName: 'Plano&Plano',
+    orgName: 'full',
+    alias: 'full',
+    source: 'builtin',
+  },
+  {
+    id: 'builtin_plano_plano_kanban',
+    clientName: 'Plano&Plano',
+    orgName: 'kanban',
+    alias: 'kanban',
+    source: 'builtin',
+  },
+];
 const state = {
   status: 'Idle',
   eventCount: 0,
@@ -105,7 +162,10 @@ const state = {
   browser: null,
   page: null,
   recordingEnabled: false,
+  salesforceOrgs: [],
+  activeSalesforceOrgId: null,
 };
+const salesforceImportLocks = new Map();
 
 const postgresConfigured = Boolean(
   DATABASE_URL ||
@@ -197,10 +257,12 @@ const runSalesforceCli = async (args, options = {}) => {
   const resolvedArgs = Array.isArray(args) ? args : [];
   const resolvedOptions = {
     maxBuffer: SALESFORCE_CLI_MAX_BUFFER,
+    timeout: SALESFORCE_CLI_TIMEOUT_MS,
     windowsHide: true,
     env: {
       ...process.env,
       SF_DISABLE_LOG_FILE: process.env.SF_DISABLE_LOG_FILE || 'true',
+      SF_DISABLE_TELEMETRY: process.env.SF_DISABLE_TELEMETRY || 'true',
       SF_LOG_LEVEL: process.env.SF_LOG_LEVEL || 'error',
       NO_COLOR: process.env.NO_COLOR || '1',
       CI: process.env.CI || '1',
@@ -214,6 +276,111 @@ const runSalesforceCli = async (args, options = {}) => {
   }
   // console.debug('Execução:',command, resolvedArgs.join(' '), { ...resolvedOptions, env: 'REDACTED' });
   return execFileAsync(command, resolvedArgs, resolvedOptions);
+};
+const redactSalesforceCliMessage = (value) =>
+  String(value || '')
+    .replace(/force:\/\/[^\s"']+/gi, '[sfdxAuthUrl]')
+    .replace(/(access[_-]?token|refresh[_-]?token|client[_-]?secret)(["'\s:=]+)[^\s"',}]+/gi, '$1$2[redacted]')
+    .slice(0, 500);
+const extractSalesforceCliErrorDetails = (stdout, stderr) => {
+  const sources = [stdout, stderr].filter(Boolean);
+  for (const source of sources) {
+    try {
+      const parsed = JSON.parse(source);
+      return {
+        name: redactSalesforceCliMessage(parsed?.name),
+        message: redactSalesforceCliMessage(parsed?.message),
+      };
+    } catch (error) {
+      // continue with the next source
+    }
+  }
+  return { name: '', message: redactSalesforceCliMessage(sources.join('\n')) };
+};
+const runSalesforceCliWithStdin = (args, input) =>
+  new Promise((resolve, reject) => {
+    const command = resolveSalesforceCliCommand();
+    const resolvedArgs = Array.isArray(args) ? args : [];
+    const spawnOptions = {
+      windowsHide: true,
+      env: {
+        ...process.env,
+        SF_DISABLE_LOG_FILE: process.env.SF_DISABLE_LOG_FILE || 'true',
+        SF_DISABLE_TELEMETRY: process.env.SF_DISABLE_TELEMETRY || 'true',
+        SF_LOG_LEVEL: process.env.SF_LOG_LEVEL || 'error',
+        NO_COLOR: process.env.NO_COLOR || '1',
+        CI: process.env.CI || '1',
+      },
+    };
+    const child =
+      process.platform === 'win32'
+        ? spawn(
+            process.env.ComSpec || 'cmd.exe',
+            [
+              '/d',
+              '/s',
+              '/c',
+              [quoteWindowsShellArg(command), ...resolvedArgs.map(quoteWindowsShellArg)].join(' '),
+            ],
+            spawnOptions
+          )
+        : spawn(command, resolvedArgs, spawnOptions);
+    let stdout = '';
+    let stderr = '';
+    let outputBytes = 0;
+    let settled = false;
+    let timeoutId = null;
+    const settle = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      callback(value);
+    };
+    const appendOutput = (target, chunk) => {
+      outputBytes += Buffer.byteLength(chunk);
+      if (outputBytes > SALESFORCE_CLI_MAX_BUFFER) {
+        const error = new Error('A resposta do Salesforce CLI excedeu o limite permitido.');
+        error.code = 'MAX_BUFFER';
+        child.kill();
+        settle(reject, error);
+        return target;
+      }
+      return target + chunk;
+    };
+
+    child.stdout.on('data', (chunk) => {
+      stdout = appendOutput(stdout, String(chunk));
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr = appendOutput(stderr, String(chunk));
+    });
+    child.on('error', (error) => settle(reject, error));
+    child.on('close', (code) => {
+      if (settled) return;
+      if (code === 0) {
+        settle(resolve, { stdout, stderr });
+        return;
+      }
+      const error = new Error('Salesforce CLI não conseguiu autorizar a org.');
+      error.code = code;
+      error.cli = extractSalesforceCliErrorDetails(stdout, stderr);
+      settle(reject, error);
+    });
+    timeoutId = setTimeout(() => {
+      const error = new Error('A autorização do Salesforce excedeu o tempo limite. Tente novamente.');
+      error.code = 'ETIMEDOUT';
+      child.kill();
+      settle(reject, error);
+    }, SALESFORCE_CLI_TIMEOUT_MS);
+    child.stdin?.on('error', () => {});
+    child.stdin?.end(`${String(input || '')}\n`);
+  });
+const safeSalesforceCliFailure = (message, error) => {
+  const wrappedError = new Error(
+    error?.code === 'ENOENT' ? 'Salesforce CLI não está disponível nesta máquina.' : message
+  );
+  wrappedError.statusCode = error?.code === 'ENOENT' ? 500 : 502;
+  return wrappedError;
 };
 const normalizeAcceptanceStatus = (value) => {
   if (typeof value !== 'string') return null;
@@ -291,7 +458,7 @@ const extractScenarioTestCase = (item) => {
 };
 const buildAcceptanceCriterionQuery = (testCaseId) =>
   `SELECT ${SALESFORCE_ACCEPTANCE_FIELDS} FROM ${SALESFORCE_ACCEPTANCE_OBJECT} WHERE Id = '${testCaseId}'`;
-const fetchTestCaseFromSalesforce = async (testCaseId) => {
+const fetchTestCaseFromSalesforce = async (testCaseId, targetOrg = getActiveSalesforceTargetOrg()) => {
   if (!SALESFORCE_ID_PATTERN.test(testCaseId)) {
     const error = new Error('ID do caso de teste inválido. Use um ID Salesforce com 15 ou 18 caracteres.');
     error.statusCode = 400;
@@ -306,7 +473,7 @@ const fetchTestCaseFromSalesforce = async (testCaseId) => {
       '--query',
       query,
       '--target-org',
-      SALESFORCE_TARGET_ORG,
+      targetOrg,
       '--json',
     ]);
     const payload = JSON.parse(stdout || '{}');
@@ -314,7 +481,7 @@ const fetchTestCaseFromSalesforce = async (testCaseId) => {
     const record = records[0];
     if (!record) {
       const error = new Error(
-        `Caso de teste ${testCaseId} não encontrado no org ${SALESFORCE_TARGET_ORG}.`
+        `Caso de teste ${testCaseId} não encontrado no org ${targetOrg}.`
       );
       error.statusCode = 404;
       throw error;
@@ -334,23 +501,19 @@ const fetchTestCaseFromSalesforce = async (testCaseId) => {
     };
   } catch (error) {
     if (error.statusCode) throw error;
-    const stderr = normalizeOptionalString(error.stderr);
-    const stdout = normalizeOptionalString(error.stdout);
-    const detail = stderr || stdout || normalizeOptionalString(error.message) || 'Erro desconhecido.';
-    const wrappedError = new Error(
-      `Falha ao consultar o Salesforce para o caso ${testCaseId}: ${detail}`
+    throw safeSalesforceCliFailure(
+      `Falha ao consultar o Salesforce para o caso ${testCaseId}. Verifique a org selecionada e tente novamente.`,
+      error
     );
-    wrappedError.statusCode = error.code === 'ENOENT' ? 500 : 502;
-    throw wrappedError;
   }
 };
-const getSalesforceConnection = async () => {
+const getSalesforceConnection = async (targetOrg = getActiveSalesforceTargetOrg()) => {
   try {
     const { stdout } = await runSalesforceCli([
       'org',
       'display',
       '--target-org',
-      SALESFORCE_TARGET_ORG,
+      targetOrg,
       '--verbose',
       '--json',
     ]);
@@ -371,22 +534,25 @@ const getSalesforceConnection = async () => {
     };
   } catch (error) {
     if (error.statusCode) throw error;
-    const detail = normalizeOptionalString(error.stderr) || normalizeOptionalString(error.message) || 'Erro desconhecido.';
-    const wrappedError = new Error(
-      `Falha ao obter a sessão Salesforce (${SALESFORCE_TARGET_ORG}): ${detail}`
+    throw safeSalesforceCliFailure(
+      'Falha ao obter a sessão Salesforce. Verifique a org selecionada e tente novamente.',
+      error
     );
-    wrappedError.statusCode = error.code === 'ENOENT' ? 500 : 502;
-    throw wrappedError;
   }
 };
-const patchAcceptanceCriterionFields = async (testCaseId, values, label) => {
+const patchAcceptanceCriterionFields = async (
+  testCaseId,
+  values,
+  label,
+  targetOrg = getActiveSalesforceTargetOrg()
+) => {
   if (!SALESFORCE_ID_PATTERN.test(testCaseId)) {
     const error = new Error('ID do caso de teste inválido. Use um ID Salesforce com 15 ou 18 caracteres.');
     error.statusCode = 400;
     throw error;
   }
 
-  const { accessToken, instanceUrl, apiVersion } = await getSalesforceConnection();
+  const { accessToken, instanceUrl, apiVersion } = await getSalesforceConnection(targetOrg);
   const endpoint = `${instanceUrl}/services/data/v${apiVersion}/sobjects/${encodeURIComponent(
     SALESFORCE_ACCEPTANCE_OBJECT
   )}/${encodeURIComponent(testCaseId)}`;
@@ -431,16 +597,25 @@ const patchAcceptanceCriterionFields = async (testCaseId, values, label) => {
     throw wrappedError;
   }
 };
-const updateAcceptanceCriterionDescription = async (testCaseId, description) => {
+const updateAcceptanceCriterionDescription = async (
+  testCaseId,
+  description,
+  targetOrg = getActiveSalesforceTargetOrg()
+) => {
   const nextDescription = typeof description === 'string' ? description.replace(/\r\n/g, '\n') : '';
   await patchAcceptanceCriterionFields(
     testCaseId,
     { agf__Description__c: nextDescription },
-    'a descrição'
+    'a descrição',
+    targetOrg
   );
   return normalizeOptionalText(nextDescription);
 };
-const updateAcceptanceCriterionStatus = async (testCaseId, status) => {
+const updateAcceptanceCriterionStatus = async (
+  testCaseId,
+  status,
+  targetOrg = getActiveSalesforceTargetOrg()
+) => {
   const normalizedStatus = normalizeAcceptanceStatus(status);
   if (!normalizedStatus || !SALESFORCE_ACCEPTANCE_STATUS_VALUES.has(normalizedStatus)) {
     const error = new Error('Status inválido. Use Passed ou Failed.');
@@ -450,13 +625,17 @@ const updateAcceptanceCriterionStatus = async (testCaseId, status) => {
   await patchAcceptanceCriterionFields(
     testCaseId,
     { agf__Status__c: normalizedStatus },
-    'o status'
+    'o status',
+    targetOrg
   );
   return normalizedStatus;
 };
 const buildFailedWorkTemplateQuery = (testCaseId) =>
   `SELECT ${SALESFORCE_FAILED_WORK_TEMPLATE_FIELDS} FROM ${SALESFORCE_ACCEPTANCE_OBJECT} WHERE Id = '${testCaseId}'`;
-const fetchFailedWorkTemplateFromSalesforce = async (testCaseId) => {
+const fetchFailedWorkTemplateFromSalesforce = async (
+  testCaseId,
+  targetOrg = getActiveSalesforceTargetOrg()
+) => {
   if (!SALESFORCE_ID_PATTERN.test(testCaseId)) {
     const error = new Error('ID do caso de teste inválido. Use um ID Salesforce com 15 ou 18 caracteres.');
     error.statusCode = 400;
@@ -471,7 +650,7 @@ const fetchFailedWorkTemplateFromSalesforce = async (testCaseId) => {
       '--query',
       query,
       '--target-org',
-      SALESFORCE_TARGET_ORG,
+      targetOrg,
       '--json',
     ]);
     const payload = JSON.parse(stdout || '{}');
@@ -479,7 +658,7 @@ const fetchFailedWorkTemplateFromSalesforce = async (testCaseId) => {
     const record = records[0];
     if (!record) {
       const error = new Error(
-        `Caso de teste ${testCaseId} não encontrado no org ${SALESFORCE_TARGET_ORG}.`
+        `Caso de teste ${testCaseId} não encontrado no org ${targetOrg}.`
       );
       error.statusCode = 404;
       throw error;
@@ -525,14 +704,10 @@ const fetchFailedWorkTemplateFromSalesforce = async (testCaseId) => {
     return template;
   } catch (error) {
     if (error.statusCode) throw error;
-    const stderr = normalizeOptionalString(error.stderr);
-    const stdout = normalizeOptionalString(error.stdout);
-    const detail = stderr || stdout || normalizeOptionalString(error.message) || 'Erro desconhecido.';
-    const wrappedError = new Error(
-      `Falha ao consultar os dados da Work no Salesforce para o caso ${testCaseId}: ${detail}`
+    throw safeSalesforceCliFailure(
+      `Falha ao consultar os dados da Work no Salesforce para o caso ${testCaseId}. Verifique a org selecionada e tente novamente.`,
+      error
     );
-    wrappedError.statusCode = error.code === 'ENOENT' ? 500 : 502;
-    throw wrappedError;
   }
 };
 const truncateText = (value, limit) => {
@@ -571,7 +746,14 @@ const salesforceErrorMessage = (payload, fallback = '') => {
   }
   return fallback;
 };
-const createRelatedFailedWorkRecord = async ({ scenario, template, name, description, priority }) => {
+const createRelatedFailedWorkRecord = async ({
+  scenario,
+  template,
+  name,
+  description,
+  priority,
+  targetOrg = getActiveSalesforceTargetOrg(),
+}) => {
   const normalizedPriority = normalizeFailedWorkPriority(priority);
   if (!normalizedPriority) {
     const error = new Error('Prioridade inválida. Use P0, P1 ou P2.');
@@ -618,7 +800,7 @@ const createRelatedFailedWorkRecord = async ({ scenario, template, name, descrip
     if (value) payload[field] = value;
   });
 
-  const { accessToken, instanceUrl, apiVersion } = await getSalesforceConnection();
+  const { accessToken, instanceUrl, apiVersion } = await getSalesforceConnection(targetOrg);
   const endpoint = `${instanceUrl}/services/data/v${apiVersion}/sobjects/${encodeURIComponent(
     SALESFORCE_WORK_OBJECT
   )}`;
@@ -661,19 +843,21 @@ const createRelatedFailedWorkRecord = async ({ scenario, template, name, descrip
     throw wrappedError;
   }
 };
-const syncTestCaseDescription = (testCaseId, description) => {
+const syncTestCaseDescription = (testCaseId, description, salesforceOrgId = null) => {
   const normalizedDescription = normalizeOptionalText(description);
   state.savedScenarios.forEach((scenario) => {
     if (!scenario?.testCase || scenario.testCase.id !== testCaseId) return;
+    if (normalizeOptionalString(scenario.salesforceOrgId) !== normalizeOptionalString(salesforceOrgId)) return;
     scenario.testCase.description = normalizedDescription;
     markScenarioPendingSync(scenario);
   });
   return normalizedDescription;
 };
-const syncTestCaseStatus = (testCaseId, status) => {
+const syncTestCaseStatus = (testCaseId, status, salesforceOrgId = null) => {
   const normalizedStatus = normalizeAcceptanceStatus(status);
   state.savedScenarios.forEach((scenario) => {
     if (!scenario?.testCase || scenario.testCase.id !== testCaseId) return;
+    if (normalizeOptionalString(scenario.salesforceOrgId) !== normalizeOptionalString(salesforceOrgId)) return;
     scenario.testCase.status = normalizedStatus;
     markScenarioPendingSync(scenario);
   });
@@ -699,6 +883,7 @@ const loadScenarios = () => {
         events: item.events || [],
         duration: item.duration || 0,
         startUrl: item.startUrl || null,
+        salesforceOrgId: normalizeOptionalString(item.salesforceOrgId),
         testCase: extractScenarioTestCase(item),
         ...normalizeSyncMetadata(item),
       }));
@@ -885,6 +1070,7 @@ const normalizeCloudScenarioRow = (row = {}) => {
     events,
     duration: Number(payload.duration) || eventsDuration(events, 0),
     startUrl: payload.startUrl || null,
+    salesforceOrgId: normalizeOptionalString(payload.salesforceOrgId),
     testCase,
     CasoSincronizado: true,
     cloudId: normalizeOptionalString(row.cloud_id) || normalizeOptionalString(payload.cloudId),
@@ -1068,6 +1254,7 @@ const scenarioSummary = (scenario) => ({
   createdAt: scenario.createdAt,
   duration: scenario.duration,
   startUrl: scenario.startUrl || null,
+  salesforceOrgId: scenario.salesforceOrgId || null,
   eventCount: scenario.events.length,
   events: Array.isArray(scenario.events) ? JSON.parse(JSON.stringify(scenario.events)) : [],
   CasoSincronizado: asBoolean(scenario.CasoSincronizado),
@@ -1759,6 +1946,372 @@ const recorderScript = `(() => {
 
 const nowIso = () => new Date().toISOString();
 const generateId = (prefix) => `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
+const MAX_SALESFORCE_ORG_LABEL_LENGTH = 80;
+const MAX_SFDX_AUTH_URL_LENGTH = 16 * 1024;
+const normalizeSalesforceOrgText = (value) => {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().replace(/\s+/g, ' ');
+  if (
+    !normalized ||
+    normalized.length > MAX_SALESFORCE_ORG_LABEL_LENGTH ||
+    /[\u0000-\u001F\u007F]/.test(normalized)
+  ) {
+    return null;
+  }
+  return normalized;
+};
+const requiredSalesforceOrgText = (value, label) => {
+  const normalized = normalizeSalesforceOrgText(value);
+  if (normalized) return normalized;
+  const error = new Error(`${label} inválido. Informe até ${MAX_SALESFORCE_ORG_LABEL_LENGTH} caracteres.`);
+  error.statusCode = 400;
+  throw error;
+};
+const normalizeSalesforceOrgEntry = (value) => {
+  if (!value || typeof value !== 'object') return null;
+  const id = normalizeOptionalString(value.id);
+  const clientName = normalizeSalesforceOrgText(value.clientName);
+  const orgName = normalizeSalesforceOrgText(value.orgName);
+  const alias = normalizeOptionalString(value.alias);
+  if (
+    !id ||
+    !clientName ||
+    !orgName ||
+    !alias ||
+    !SALESFORCE_ORG_ID_PATTERN.test(id) ||
+    !SALESFORCE_ALIAS_PATTERN.test(alias)
+  ) {
+    return null;
+  }
+  return {
+    id,
+    clientName,
+    orgName,
+    alias,
+    source: value.source === 'builtin' ? 'builtin' : 'imported',
+    importedAt: normalizeOptionalString(value.importedAt),
+  };
+};
+const sameSalesforceOrg = (left, right) =>
+  String(left?.clientName || '').localeCompare(String(right?.clientName || ''), 'pt-BR', {
+    sensitivity: 'accent',
+  }) === 0 &&
+  String(left?.orgName || '').localeCompare(String(right?.orgName || ''), 'pt-BR', {
+    sensitivity: 'accent',
+  }) === 0;
+const salesforceOrgKey = (clientName, orgName) =>
+  [clientName, orgName]
+    .map((value) => String(value || '').normalize('NFKC').toLocaleLowerCase('pt-BR'))
+    .join('\u0000');
+const withSalesforceOrgImportLock = async (clientName, orgName, callback) => {
+  const key = salesforceOrgKey(clientName, orgName);
+  const previous = salesforceImportLocks.get(key) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+  salesforceImportLocks.set(key, current);
+  await previous;
+  try {
+    return await callback();
+  } finally {
+    release();
+    if (salesforceImportLocks.get(key) === current) salesforceImportLocks.delete(key);
+  }
+};
+const listPublicSalesforceOrgs = () =>
+  state.salesforceOrgs.map((org) => ({
+    id: org.id,
+    clientName: org.clientName,
+    orgName: org.orgName,
+    importedAt: org.importedAt || null,
+    active: org.id === state.activeSalesforceOrgId,
+  }));
+const loadSalesforceOrgs = () => {
+  let storedOrgs = [];
+  let activeSalesforceOrgId = null;
+  try {
+    if (fs.existsSync(SALESFORCE_ORGS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(SALESFORCE_ORGS_FILE, 'utf8'));
+      storedOrgs = Array.isArray(parsed?.orgs) ? parsed.orgs : [];
+      activeSalesforceOrgId = normalizeOptionalString(parsed?.activeSalesforceOrgId);
+    }
+  } catch (error) {
+    storedOrgs = [];
+    activeSalesforceOrgId = null;
+  }
+
+  const connections = DEFAULT_SALESFORCE_ORGS.map((org) => ({ ...org, importedAt: null }));
+  storedOrgs.map(normalizeSalesforceOrgEntry).filter(Boolean).forEach((org) => {
+    const existingIndex = connections.findIndex((item) => item.id === org.id || sameSalesforceOrg(item, org));
+    if (existingIndex === -1) {
+      connections.push(org);
+      return;
+    }
+    connections[existingIndex] = {
+      ...connections[existingIndex],
+      ...org,
+      id: connections[existingIndex].id,
+    };
+  });
+  state.salesforceOrgs = connections;
+  state.activeSalesforceOrgId = connections.some((org) => org.id === activeSalesforceOrgId)
+    ? activeSalesforceOrgId
+    : null;
+};
+const saveSalesforceOrgs = () => {
+  ensureDataDir();
+  const payload = {
+    activeSalesforceOrgId: state.activeSalesforceOrgId,
+    orgs: state.salesforceOrgs.map((org) => ({
+      id: org.id,
+      clientName: org.clientName,
+      orgName: org.orgName,
+      alias: org.alias,
+      source: org.source,
+      importedAt: org.importedAt || null,
+    })),
+  };
+  const tempFile = `${SALESFORCE_ORGS_FILE}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tempFile, JSON.stringify(payload, null, 2), { mode: 0o600 });
+    fs.renameSync(tempFile, SALESFORCE_ORGS_FILE);
+    fs.chmodSync(SALESFORCE_ORGS_FILE, 0o600);
+  } finally {
+    if (fs.existsSync(tempFile)) fs.rmSync(tempFile, { force: true });
+  }
+};
+const findSalesforceOrg = (id) => state.salesforceOrgs.find((org) => org.id === id) || null;
+const getSalesforceTargetForOrgId = (salesforceOrgId, { allowLegacyDefault = false } = {}) => {
+  const normalizedOrgId = normalizeOptionalString(salesforceOrgId);
+  if (normalizedOrgId) {
+    const connection = findSalesforceOrg(normalizedOrgId);
+    if (connection) return connection.alias;
+    const error = new Error('O acesso Salesforce selecionado não está configurado nesta máquina.');
+    error.statusCode = 409;
+    throw error;
+  }
+  if (allowLegacyDefault) return DEFAULT_SALESFORCE_TARGET_ORG;
+  const error = new Error('Selecione uma organização Salesforce antes de consultar ou salvar um caso de teste.');
+  error.statusCode = 409;
+  throw error;
+};
+const getActiveSalesforceTargetOrg = () =>
+  getSalesforceTargetForOrgId(state.activeSalesforceOrgId, { allowLegacyDefault: true });
+const getSalesforceTargetForScenario = (scenario) => {
+  return getSalesforceTargetForOrgId(scenario?.salesforceOrgId, { allowLegacyDefault: true });
+};
+const buildManagedSalesforceAlias = (id) => {
+  const safeId = String(id || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(-54);
+  return `superpuppeteer-${safeId || 'org'}`;
+};
+const normalizeSalesforceInstanceUrl = (value) => {
+  const raw = normalizeOptionalString(value) || DEFAULT_SALESFORCE_LOGIN_URL;
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  let parsed;
+  try {
+    parsed = new URL(withProtocol);
+  } catch (error) {
+    const invalidError = new Error('URL de login Salesforce inválida.');
+    invalidError.statusCode = 400;
+    throw invalidError;
+  }
+  if (parsed.protocol !== 'https:' || !parsed.hostname || parsed.username || parsed.password) {
+    const invalidError = new Error('URL de login Salesforce inválida.');
+    invalidError.statusCode = 400;
+    throw invalidError;
+  }
+  parsed.hash = '';
+  parsed.search = '';
+  parsed.pathname = '';
+  return parsed.toString().replace(/\/+$/, '');
+};
+const upsertSalesforceOrgConnection = ({ id = null, clientName, orgName, alias, source = 'imported' }) => {
+  const existingIndex = state.salesforceOrgs.findIndex((org) =>
+    sameSalesforceOrg(org, { clientName, orgName })
+  );
+  const previousOrg = existingIndex >= 0 ? state.salesforceOrgs[existingIndex] : null;
+  const connection = {
+    id: id || previousOrg?.id || generateId('org'),
+    clientName,
+    orgName,
+    alias,
+    source,
+    importedAt: nowIso(),
+  };
+  if (existingIndex >= 0) {
+    state.salesforceOrgs.splice(existingIndex, 1, connection);
+  } else {
+    state.salesforceOrgs.push(connection);
+  }
+  state.activeSalesforceOrgId = connection.id;
+  saveSalesforceOrgs();
+  return connection;
+};
+const extractSfdxAuthUrl = (auth) => {
+  const candidate = auth?.sfdxAuthUrl || auth?.result?.sfdxAuthUrl;
+  if (typeof candidate !== 'string') {
+    const error = new Error('O JSON não contém uma sfdxAuthUrl válida.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const value = candidate.trim();
+  if (
+    !value ||
+    value.length > MAX_SFDX_AUTH_URL_LENGTH ||
+    !/^force:\/\//i.test(value) ||
+    /[\r\n\u0000]/.test(value)
+  ) {
+    const error = new Error('O JSON não contém uma sfdxAuthUrl válida.');
+    error.statusCode = 400;
+    throw error;
+  }
+  return value;
+};
+const assertLocalCredentialImport = (req) => {
+  const address = String(req.socket?.remoteAddress || '').toLowerCase();
+  const isLoopback = address === '::1' || address === '127.0.0.1' || address === '::ffff:127.0.0.1';
+  if (isLoopback) return;
+  const error = new Error('A importação de acessos é permitida somente em localhost.');
+  error.statusCode = 403;
+  throw error;
+};
+const verifySalesforceOrgAccess = async (alias) => {
+  try {
+    await runSalesforceCli(['org', 'display', '--target-org', alias, '--json']);
+  } catch (error) {
+    const safeError = new Error('Não foi possível conectar à org selecionada. Importe um acesso válido e tente novamente.');
+    safeError.statusCode = error.code === 'ENOENT' ? 500 : 502;
+    throw safeError;
+  }
+};
+const getSalesforceWebLoginUrl = async (targetOrg) => {
+  try {
+    const { stdout } = await runSalesforceCli([
+      'org',
+      'open',
+      '--target-org',
+      targetOrg,
+      '--url-only',
+      '--json',
+    ]);
+    const payload = JSON.parse(stdout || '{}');
+    const url = normalizeOptionalString(payload?.result?.url);
+    if (!url || !/^https:\/\//i.test(url)) {
+      const error = new Error('Salesforce CLI não retornou uma URL de login válida.');
+      error.statusCode = 502;
+      throw error;
+    }
+    return url;
+  } catch (error) {
+    if (error.statusCode) throw error;
+    throw safeSalesforceCliFailure(
+      'Não foi possível abrir a org conectada. Verifique o acesso Salesforce selecionado e tente novamente.',
+      error
+    );
+  }
+};
+const openActiveSalesforceOrgInPage = async (page, targetUrl = '', targetOrg = getSalesforceTargetForOrgId(state.activeSalesforceOrgId)) => {
+  if (!page) throw new Error('Página não disponível');
+  const loginUrl = await getSalesforceWebLoginUrl(targetOrg);
+  await page.goto(loginUrl, { waitUntil: 'domcontentloaded' });
+
+  const normalizedTargetUrl = normalizeOptionalString(targetUrl);
+  if (normalizedTargetUrl) {
+    await page.goto(normalizedTargetUrl, { waitUntil: 'domcontentloaded' });
+  }
+};
+const salesforceImportErrorMessage = (error) => {
+  const cliName = String(error?.cli?.name || '');
+  const cliMessage = String(error?.cli?.message || '');
+  const combined = `${cliName} ${cliMessage}`.toLowerCase();
+  if (error?.code === 'ENOENT') return 'Salesforce CLI não está disponível nesta máquina.';
+  if (error?.code === 'ETIMEDOUT') return 'A autorização do Salesforce excedeu o tempo limite. Tente novamente.';
+  if (combined.includes('unexpected argument')) {
+    return 'Não foi possível interpretar o comando de importação do Salesforce CLI.';
+  }
+  if (combined.includes('refreshtokenautherror') || combined.includes('refresh token')) {
+    return 'O refresh token desse JSON não autorizou a org. Gere um novo JSON de acesso e tente novamente.';
+  }
+  if (combined.includes('enotfound') || combined.includes('econnrefused') || combined.includes('network')) {
+    return 'Não foi possível acessar a instância Salesforce informada no JSON. Verifique sua rede/VPN e tente novamente.';
+  }
+  return 'Não foi possível importar o acesso. Verifique o arquivo JSON e tente novamente.';
+};
+const importSalesforceOrgAccess = async ({ clientName, orgName, auth }) => {
+  const normalizedClientName = requiredSalesforceOrgText(clientName, 'Cliente');
+  const normalizedOrgName = requiredSalesforceOrgText(orgName, 'Nome da org');
+  const sfdxAuthUrl = extractSfdxAuthUrl(auth);
+  return withSalesforceOrgImportLock(normalizedClientName, normalizedOrgName, async () => {
+    const existingIndex = state.salesforceOrgs.findIndex((org) =>
+      sameSalesforceOrg(org, { clientName: normalizedClientName, orgName: normalizedOrgName })
+    );
+    const previousOrg = existingIndex >= 0 ? state.salesforceOrgs[existingIndex] : null;
+    const id = previousOrg?.id || generateId('org');
+    const alias = buildManagedSalesforceAlias(id);
+
+    try {
+      await runSalesforceCliWithStdin(
+        ['org', 'login', 'sfdx-url', '--alias', alias, '--json', '--sfdx-url-stdin'],
+        sfdxAuthUrl
+      );
+      await verifySalesforceOrgAccess(alias);
+    } catch (error) {
+      if (error.statusCode === 400) throw error;
+      const safeError = new Error(salesforceImportErrorMessage(error));
+      safeError.statusCode = error.code === 'ENOENT' ? 500 : 502;
+      throw safeError;
+    }
+
+    return upsertSalesforceOrgConnection({
+      id,
+      clientName: normalizedClientName,
+      orgName: normalizedOrgName,
+      alias,
+      source: 'imported',
+    });
+  });
+};
+const loginSalesforceOrgAccess = async ({ clientName, orgName, instanceUrl }) => {
+  const normalizedClientName = requiredSalesforceOrgText(clientName, 'Cliente');
+  const normalizedOrgName = requiredSalesforceOrgText(orgName, 'Nome da org');
+  const normalizedInstanceUrl = normalizeSalesforceInstanceUrl(instanceUrl);
+  return withSalesforceOrgImportLock(normalizedClientName, normalizedOrgName, async () => {
+    const existingIndex = state.salesforceOrgs.findIndex((org) =>
+      sameSalesforceOrg(org, { clientName: normalizedClientName, orgName: normalizedOrgName })
+    );
+    const previousOrg = existingIndex >= 0 ? state.salesforceOrgs[existingIndex] : null;
+    const id = previousOrg?.id || generateId('org');
+    const alias = buildManagedSalesforceAlias(id);
+    const args = ['org', 'login', 'web', '--alias', alias, '--instance-url', normalizedInstanceUrl, '--json'];
+
+    try {
+      await runSalesforceCli(args, { timeout: SALESFORCE_WEB_LOGIN_TIMEOUT_MS });
+      await verifySalesforceOrgAccess(alias);
+    } catch (error) {
+      if (error.statusCode === 400) throw error;
+      const safeError = new Error(
+        error.code === 'ENOENT'
+          ? 'Salesforce CLI não está disponível nesta máquina.'
+          : 'Não foi possível concluir o login Salesforce. Tente novamente e finalize a autenticação no navegador.'
+      );
+      safeError.statusCode = error.code === 'ENOENT' ? 500 : 502;
+      throw safeError;
+    }
+
+    return upsertSalesforceOrgConnection({
+      id,
+      clientName: normalizedClientName,
+      orgName: normalizedOrgName,
+      alias,
+      source: 'imported',
+    });
+  });
+};
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const monotonicNow = () => Number(process.hrtime.bigint() / 1000000n);
 const MAX_REPLAY_LOG_ITEMS = 300;
@@ -1851,6 +2404,7 @@ const waitForInteractionDelay = async (targetMs, options = {}, meta = {}) => {
 };
 
 loadScenarios();
+loadSalesforceOrgs();
 
 const serializeState = () => (
   {
@@ -2993,15 +3547,94 @@ wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ type: 'state', state: serializeState() }));
 });
 
+app.get('/api/salesforce/orgs', (req, res) => {
+  return res.json({
+    ok: true,
+    activeSalesforceOrgId: state.activeSalesforceOrgId,
+    orgs: listPublicSalesforceOrgs(),
+  });
+});
+
+app.post('/api/salesforce/orgs/import', async (req, res) => {
+  try {
+    assertLocalCredentialImport(req);
+    const connection = await importSalesforceOrgAccess({
+      clientName: req.body?.clientName,
+      orgName: req.body?.orgName,
+      auth: req.body?.auth,
+    });
+    broadcastState();
+    return res.status(201).json({
+      ok: true,
+      org: listPublicSalesforceOrgs().find((org) => org.id === connection.id) || null,
+      activeSalesforceOrgId: state.activeSalesforceOrgId,
+      orgs: listPublicSalesforceOrgs(),
+    });
+  } catch (error) {
+    return res.status(Number(error.statusCode) || 500).json({
+      error: error.message || 'Não foi possível importar o acesso.',
+    });
+  }
+});
+
+app.post('/api/salesforce/orgs/login', async (req, res) => {
+  try {
+    assertLocalCredentialImport(req);
+    const connection = await loginSalesforceOrgAccess({
+      clientName: req.body?.clientName,
+      orgName: req.body?.orgName,
+      instanceUrl: req.body?.instanceUrl,
+    });
+    broadcastState();
+    return res.status(201).json({
+      ok: true,
+      org: listPublicSalesforceOrgs().find((org) => org.id === connection.id) || null,
+      activeSalesforceOrgId: state.activeSalesforceOrgId,
+      orgs: listPublicSalesforceOrgs(),
+    });
+  } catch (error) {
+    return res.status(Number(error.statusCode) || 500).json({
+      error: error.message || 'Não foi possível concluir o login Salesforce.',
+    });
+  }
+});
+
+app.post('/api/salesforce/orgs/:id/select', async (req, res) => {
+  const connection = findSalesforceOrg(req.params.id);
+  if (!connection) return res.status(404).json({ error: 'Org não encontrada.' });
+
+  try {
+    await verifySalesforceOrgAccess(connection.alias);
+    state.activeSalesforceOrgId = connection.id;
+    saveSalesforceOrgs();
+    broadcastState();
+    return res.json({
+      ok: true,
+      org: listPublicSalesforceOrgs().find((org) => org.id === connection.id) || null,
+      activeSalesforceOrgId: state.activeSalesforceOrgId,
+      orgs: listPublicSalesforceOrgs(),
+    });
+  } catch (error) {
+    return res.status(Number(error.statusCode) || 500).json({
+      error: error.message || 'Não foi possível conectar à org.',
+    });
+  }
+});
+
 app.post('/api/recording/start', async (req, res) => {
   try {
     if (state.status === 'Replaying') return res.status(409).json({ error: 'Replay em andamento.' });
+    const targetOrg = getSalesforceTargetForOrgId(state.activeSalesforceOrgId);
 
     await ensureBrowser();
     const page = await getActivePage();
     if (!page) throw new Error('Página não disponível');
 
     const extendScenario = state.extendScenarioId ? findScenario(state.extendScenarioId) : null;
+    const requestedUrl = normalizeOptionalString(req.body?.url);
+    const connectedStartUrl = requestedUrl || extendScenario?.startUrl || '';
+    await openActiveSalesforceOrgInPage(page, connectedStartUrl, targetOrg);
+
     const baseEvents = extendScenario ? cloneEvents(extendScenario.events) : [];
     const baseDuration = extendScenario
       ? eventsDuration(extendScenario.events, extendScenario.duration || 0)
@@ -3010,7 +3643,7 @@ app.post('/api/recording/start', async (req, res) => {
     state.currentRecording = {
       id: generateId('rec'),
       createdAt: nowIso(),
-      startUrl: extendScenario?.startUrl || page.url(),
+      startUrl: connectedStartUrl || page.url(),
       startEpoch: Date.now(),
       pausedDuration: 0,
       pauseStartedAt: null,
@@ -3032,7 +3665,7 @@ app.post('/api/recording/start', async (req, res) => {
     broadcastState();
     return res.json({ ok: true });
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    return res.status(Number(error.statusCode) || 500).json({ error: error.message });
   }
 });
 
@@ -3147,7 +3780,10 @@ app.post('/api/scenarios/save', async (req, res) => {
   if (!state.lastRecording) return res.status(404).json({ error: 'Nenhuma gravação finalizada.' });
 
   try {
-    const testCase = testCaseId ? await fetchTestCaseFromSalesforce(testCaseId) : null;
+    const requestedSalesforceOrgId = normalizeOptionalString(req.body?.salesforceOrgId);
+    const salesforceOrgId = requestedSalesforceOrgId || state.activeSalesforceOrgId;
+    const targetOrg = testCaseId ? getSalesforceTargetForOrgId(salesforceOrgId) : null;
+    const testCase = testCaseId ? await fetchTestCaseFromSalesforce(testCaseId, targetOrg) : null;
     if (testCaseId) {
       validateTestCaseMetadataForScenarioSave(testCase, testCaseId);
     }
@@ -3158,6 +3794,7 @@ app.post('/api/scenarios/save', async (req, res) => {
       events: [...state.lastRecording.events],
       duration: state.lastRecording.duration,
       startUrl: state.lastRecording.startUrl,
+      salesforceOrgId,
       testCase,
       CasoSincronizado: false,
       cloudId: null,
@@ -3244,6 +3881,7 @@ app.post('/api/local-state/hydrate', async (req, res) => {
       events: cloneEvents(item.events || []),
       duration: item.duration || eventsDuration(item.events, 0),
       startUrl: item.startUrl || null,
+      salesforceOrgId: normalizeOptionalString(item.salesforceOrgId),
       testCase: extractScenarioTestCase(item),
       ...normalizeSyncMetadata(item),
     }));
@@ -3330,8 +3968,9 @@ app.post('/api/scenarios/:id/test-case/description', async (req, res) => {
   const description = typeof req.body?.description === 'string' ? req.body.description : '';
 
   try {
-    const normalizedDescription = await updateAcceptanceCriterionDescription(testCaseId, description);
-    syncTestCaseDescription(testCaseId, normalizedDescription);
+    const targetOrg = getSalesforceTargetForScenario(scenario);
+    const normalizedDescription = await updateAcceptanceCriterionDescription(testCaseId, description, targetOrg);
+    syncTestCaseDescription(testCaseId, normalizedDescription, scenario.salesforceOrgId);
     saveScenarios();
     broadcastState();
     return res.json({
@@ -3361,8 +4000,9 @@ app.post('/api/scenarios/:id/test-case/status', async (req, res) => {
   const status = typeof req.body?.status === 'string' ? req.body.status : '';
 
   try {
-    const normalizedStatus = await updateAcceptanceCriterionStatus(testCaseId, status);
-    syncTestCaseStatus(testCaseId, normalizedStatus);
+    const targetOrg = getSalesforceTargetForScenario(scenario);
+    const normalizedStatus = await updateAcceptanceCriterionStatus(testCaseId, status, targetOrg);
+    syncTestCaseStatus(testCaseId, normalizedStatus, scenario.salesforceOrgId);
     saveScenarios();
     broadcastState();
     return res.json({
@@ -3386,7 +4026,10 @@ app.get('/api/scenarios/:id/test-case/failed-work/template', async (req, res) =>
   }
 
   try {
-    const template = await fetchFailedWorkTemplateFromSalesforce(testCaseId);
+    const template = await fetchFailedWorkTemplateFromSalesforce(
+      testCaseId,
+      getSalesforceTargetForScenario(scenario)
+    );
     return res.json({
       ok: true,
       template,
@@ -3418,13 +4061,15 @@ app.post('/api/scenarios/:id/test-case/failed-work', async (req, res) => {
   }
 
   try {
-    const template = await fetchFailedWorkTemplateFromSalesforce(testCaseId);
+    const targetOrg = getSalesforceTargetForScenario(scenario);
+    const template = await fetchFailedWorkTemplateFromSalesforce(testCaseId, targetOrg);
     const createdWork = await createRelatedFailedWorkRecord({
       scenario,
       template,
       name,
       description,
       priority: normalizedPriority,
+      targetOrg,
     });
     return res.json({
       ok: true,
@@ -3580,6 +4225,7 @@ app.post('/api/scenarios/import', async (req, res) => {
       events: item.events || [],
       duration: item.duration || 0,
       startUrl: item.startUrl || null,
+      salesforceOrgId: normalizeOptionalString(item.salesforceOrgId),
       testCase: extractScenarioTestCase(item),
       ...normalizeSyncMetadata(item),
     }));
@@ -3697,13 +4343,14 @@ app.post('/api/navigate', async (req, res) => {
   try {
     const url = String(req.body?.url || '').trim();
     if (!url) return res.status(400).json({ error: 'URL inválida.' });
+    const targetOrg = getSalesforceTargetForOrgId(state.activeSalesforceOrgId);
     await ensureBrowser();
     const page = await getActivePage();
     if (!page) throw new Error('Página não disponível');
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await openActiveSalesforceOrgInPage(page, url, targetOrg);
     return res.json({ ok: true });
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    return res.status(Number(error.statusCode) || 500).json({ error: error.message });
   }
 });
 
@@ -3779,8 +4426,8 @@ app.delete('/api/recordings/:name', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`UI disponível em http://localhost:${PORT}`);
+server.listen(PORT, BIND_HOST, () => {
+  console.log(`UI disponível em http://${BIND_HOST}:${PORT}`);
 });
 
 // const job = schedule.scheduleJob('*/90 * * * * *', async function(){

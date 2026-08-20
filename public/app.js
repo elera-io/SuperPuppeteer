@@ -63,8 +63,33 @@ const cloudImportSelectAll = document.getElementById('cloudImportSelectAll');
 const cloudImportConfirm = document.getElementById('cloudImportConfirm');
 const cloudImportList = document.getElementById('cloudImportList');
 const cloudImportStatus = document.getElementById('cloudImportStatus');
+const orgImportModal = document.getElementById('orgImportModal');
+const orgImportClose = document.getElementById('orgImportClose');
+const orgImportCancel = document.getElementById('orgImportCancel');
+const orgImportConfirm = document.getElementById('orgImportConfirm');
+const orgImportFileInput = document.getElementById('orgImportFileInput');
+const orgImportFileGroup = document.getElementById('orgImportFileGroup');
+const orgImportMethodJson = document.getElementById('orgImportMethodJson');
+const orgImportMethodLogin = document.getElementById('orgImportMethodLogin');
+const orgImportClientSelect = document.getElementById('orgImportClientSelect');
+const orgImportNewClientField = document.getElementById('orgImportNewClientField');
+const orgImportNewClientInput = document.getElementById('orgImportNewClientInput');
+const orgImportOrgNameInput = document.getElementById('orgImportOrgNameInput');
+const orgLoginInstanceField = document.getElementById('orgLoginInstanceField');
+const orgLoginInstanceInput = document.getElementById('orgLoginInstanceInput');
+const orgImportHelp = document.getElementById('orgImportHelp');
+const orgImportStatus = document.getElementById('orgImportStatus');
 
 const urlInput = document.getElementById('urlInput');
+const orgConnection = document.getElementById('orgConnection');
+const orgSelectorBtn = document.getElementById('orgSelectorBtn');
+const orgOptions = document.getElementById('orgOptions');
+const orgOptionsHeading = document.getElementById('orgOptionsHeading');
+const orgClientOptions = document.getElementById('orgClientOptions');
+const orgNameOptions = document.getElementById('orgNameOptions');
+const orgBackToClientsBtn = document.getElementById('orgBackToClientsBtn');
+const importOrgAccessBtn = document.getElementById('importOrgAccessBtn');
+const selectedOrgLabel = document.getElementById('selectedOrgLabel');
 const scenarioNameInput = document.getElementById('scenarioName');
 const scenarioTestCaseIdInput = document.getElementById('scenarioTestCaseId');
 const savedScenarioClientFilter = document.getElementById('savedScenarioClientFilter');
@@ -104,6 +129,8 @@ let pendingDeleteScenarioId = null;
 let cloudScenarioCandidates = [];
 let scenarioCompletionTimeout = null;
 let localStateHydrated = false;
+let salesforceOrgs = [];
+let selectedOrgClientName = null;
 const workspacePanels = {
   main: workspacePanelMain,
   scenarios: workspacePanelScenarios,
@@ -1525,6 +1552,290 @@ const normalizeUrl = (value) => {
   return `https://${value}`;
 };
 
+const NEW_ORG_IMPORT_CLIENT_VALUE = '__new_client__';
+const getSalesforceOrgClients = () =>
+  [...new Set(salesforceOrgs.map((org) => String(org?.clientName || '').trim()).filter(Boolean))];
+const setOrgImportStatus = (message = '', tone = '') => {
+  if (!orgImportStatus) return;
+  orgImportStatus.textContent = message;
+  orgImportStatus.className = 'hint description-status';
+  if (tone) orgImportStatus.classList.add(tone);
+};
+const updateSelectedOrgLabel = () => {
+  if (!selectedOrgLabel) return;
+  const activeOrg = salesforceOrgs.find((org) => org.active);
+  selectedOrgLabel.textContent = activeOrg
+    ? [activeOrg.clientName, activeOrg.orgName].filter(Boolean).join(' - ')
+    : 'Selecione uma organização';
+};
+const getActiveSalesforceOrgId = () => salesforceOrgs.find((org) => org.active)?.id || null;
+const createOrgOptionButton = ({ className = '', title, detail, selected = false, data = {} }) => {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `org-option ${className}`.trim();
+  button.classList.toggle('selected', selected);
+  button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  Object.entries(data).forEach(([key, value]) => {
+    button.dataset[key] = value;
+  });
+  const name = document.createElement('span');
+  name.className = 'org-option-name';
+  name.textContent = title;
+  const type = document.createElement('span');
+  type.className = 'org-option-type';
+  type.textContent = detail;
+  button.append(name, type);
+  return button;
+};
+const renderOrgClientOptions = () => {
+  if (!orgClientOptions) return;
+  orgClientOptions.replaceChildren();
+  const clients = getSalesforceOrgClients();
+  if (!clients.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item empty-state';
+    empty.textContent = 'Nenhum cliente disponível. Importe um acesso para começar.';
+    orgClientOptions.appendChild(empty);
+    return;
+  }
+  clients.forEach((clientName) => {
+    const count = salesforceOrgs.filter((org) => org.clientName === clientName).length;
+    orgClientOptions.appendChild(
+      createOrgOptionButton({
+        className: 'org-client-option',
+        title: clientName,
+        detail: `${count} org${count === 1 ? '' : 's'} disponível${count === 1 ? '' : 'is'}`,
+        selected: clientName === selectedOrgClientName,
+        data: { orgClient: clientName },
+      })
+    );
+  });
+};
+const renderOrgNameOptions = (clientName) => {
+  if (!orgNameOptions) return;
+  orgNameOptions.replaceChildren();
+  const clientOrgs = salesforceOrgs.filter((org) => org.clientName === clientName);
+  if (!clientOrgs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item empty-state';
+    empty.textContent = 'Nenhuma org disponível para este cliente.';
+    orgNameOptions.appendChild(empty);
+    return;
+  }
+  clientOrgs.forEach((org) => {
+    orgNameOptions.appendChild(
+      createOrgOptionButton({
+        title: org.orgName,
+        detail: org.active ? 'Conectada' : 'Org',
+        selected: Boolean(org.active),
+        data: { orgId: org.id },
+      })
+    );
+  });
+};
+const populateOrgImportClientOptions = () => {
+  if (!orgImportClientSelect) return;
+  const currentValue = orgImportClientSelect.value;
+  const clients = getSalesforceOrgClients();
+  orgImportClientSelect.replaceChildren();
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = 'Selecione o cliente';
+  orgImportClientSelect.appendChild(placeholder);
+  clients.forEach((clientName) => {
+    const option = document.createElement('option');
+    option.value = clientName;
+    option.textContent = clientName;
+    orgImportClientSelect.appendChild(option);
+  });
+  const newClient = document.createElement('option');
+  newClient.value = NEW_ORG_IMPORT_CLIENT_VALUE;
+  newClient.textContent = 'Cadastrar novo cliente…';
+  orgImportClientSelect.appendChild(newClient);
+  orgImportClientSelect.value =
+    currentValue === NEW_ORG_IMPORT_CLIENT_VALUE || clients.includes(currentValue) ? currentValue : '';
+};
+const applySalesforceOrgsPayload = (payload) => {
+  const orgs = Array.isArray(payload?.orgs) ? payload.orgs : [];
+  const activeId = String(payload?.activeSalesforceOrgId || '').trim();
+  salesforceOrgs = orgs
+    .filter((org) => org && typeof org === 'object' && org.id && org.clientName && org.orgName)
+    .map((org) => ({
+      id: String(org.id),
+      clientName: String(org.clientName),
+      orgName: String(org.orgName),
+      active: activeId ? String(org.id) === activeId : Boolean(org.active),
+  }));
+  updateSelectedOrgLabel();
+  populateOrgImportClientOptions();
+  if (orgSelectorBtn?.getAttribute('aria-expanded') === 'true') {
+    if (selectedOrgClientName && salesforceOrgs.some((org) => org.clientName === selectedOrgClientName)) {
+      renderOrgNameOptions(selectedOrgClientName);
+    } else {
+      renderOrgClientOptions();
+    }
+  }
+};
+const loadSalesforceOrgs = async () => {
+  const response = await apiRequest('/api/salesforce/orgs');
+  applySalesforceOrgsPayload(await response.json());
+};
+const showOrgClientOptions = () => {
+  selectedOrgClientName = null;
+  if (orgOptionsHeading) orgOptionsHeading.textContent = 'Selecione o cliente';
+  if (orgClientOptions) orgClientOptions.hidden = false;
+  if (orgNameOptions) orgNameOptions.hidden = true;
+  if (orgBackToClientsBtn) orgBackToClientsBtn.hidden = true;
+  renderOrgClientOptions();
+};
+
+const showOrgNamesForClient = (client) => {
+  if (!client) return;
+  selectedOrgClientName = client;
+  if (orgOptionsHeading) orgOptionsHeading.textContent = `Orgs disponíveis para ${client}`;
+  if (orgClientOptions) orgClientOptions.hidden = true;
+  if (orgNameOptions) orgNameOptions.hidden = false;
+  if (orgBackToClientsBtn) orgBackToClientsBtn.hidden = false;
+  renderOrgNameOptions(client);
+};
+
+const setOrgOptionsOpen = (open) => {
+  if (!orgSelectorBtn || !orgOptions) return;
+  if (open) showOrgClientOptions();
+  orgSelectorBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  orgSelectorBtn.classList.toggle('is-open', open);
+  orgOptions.classList.toggle('hidden', !open);
+};
+
+const selectOrgOption = async (orgId, button) => {
+  if (!orgId || !button) return;
+  button.disabled = true;
+  try {
+    const response = await apiRequest(`/api/salesforce/orgs/${encodeURIComponent(orgId)}/select`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    applySalesforceOrgsPayload(await response.json());
+    setOrgOptionsOpen(false);
+  } catch (error) {
+    window.alert(error.message || 'Não foi possível conectar à org.');
+  } finally {
+    button.disabled = false;
+  }
+};
+const updateOrgImportClientField = () => {
+  if (!orgImportClientSelect || !orgImportNewClientField) return;
+  const isNewClient = orgImportClientSelect.value === NEW_ORG_IMPORT_CLIENT_VALUE;
+  orgImportNewClientField.hidden = !isNewClient;
+  if (!isNewClient && orgImportNewClientInput) orgImportNewClientInput.value = '';
+};
+const getOrgImportMethod = () => (orgImportMethodLogin?.checked ? 'login' : 'json');
+const updateOrgImportMethod = () => {
+  const isLogin = getOrgImportMethod() === 'login';
+  if (orgImportFileGroup) orgImportFileGroup.hidden = isLogin;
+  if (orgLoginInstanceField) orgLoginInstanceField.hidden = !isLogin;
+  if (orgImportConfirm) orgImportConfirm.textContent = isLogin ? 'Entrar e conectar' : 'Importar e conectar';
+  if (orgImportHelp) {
+    orgImportHelp.textContent = isLogin
+      ? 'Se a URL ficar vazia, o login usará https://test.salesforce.com. Para My Domain, informe a URL da org.'
+      : 'O acesso é enviado diretamente ao Salesforce CLI e não é salvo no projeto.';
+  }
+  setOrgImportStatus('');
+};
+const closeOrgImportModal = () => {
+  if (!orgImportModal) return;
+  orgImportModal.classList.add('hidden');
+  orgImportModal.setAttribute('aria-hidden', 'true');
+  if (orgImportFileInput) orgImportFileInput.value = '';
+  if (orgImportClientSelect) orgImportClientSelect.value = '';
+  if (orgImportNewClientInput) orgImportNewClientInput.value = '';
+  if (orgImportOrgNameInput) orgImportOrgNameInput.value = '';
+  if (orgLoginInstanceInput) orgLoginInstanceInput.value = '';
+  if (orgImportMethodJson) orgImportMethodJson.checked = true;
+  updateOrgImportClientField();
+  updateOrgImportMethod();
+  setOrgImportStatus('');
+};
+const openOrgImportModal = async () => {
+  if (!orgImportModal) return;
+  populateOrgImportClientOptions();
+  if (orgImportFileInput) orgImportFileInput.value = '';
+  if (orgImportClientSelect) orgImportClientSelect.value = '';
+  if (orgImportNewClientInput) orgImportNewClientInput.value = '';
+  if (orgImportOrgNameInput) orgImportOrgNameInput.value = '';
+  if (orgLoginInstanceInput) orgLoginInstanceInput.value = '';
+  if (orgImportMethodJson) orgImportMethodJson.checked = true;
+  updateOrgImportClientField();
+  updateOrgImportMethod();
+  setOrgImportStatus('');
+  orgImportModal.classList.remove('hidden');
+  orgImportModal.setAttribute('aria-hidden', 'false');
+};
+const importOrgAccess = async () => {
+  const file = orgImportFileInput?.files?.[0];
+  const method = getOrgImportMethod();
+  const selectedClient = orgImportClientSelect?.value || '';
+  const clientName =
+    selectedClient === NEW_ORG_IMPORT_CLIENT_VALUE
+      ? orgImportNewClientInput?.value.trim() || ''
+      : selectedClient.trim();
+  const orgName = orgImportOrgNameInput?.value.trim() || '';
+  if (method === 'json' && !file) {
+    setOrgImportStatus('Selecione o arquivo JSON de acesso.', 'error');
+    return;
+  }
+  if (!clientName) {
+    setOrgImportStatus('Selecione ou informe o cliente.', 'error');
+    return;
+  }
+  if (!orgName) {
+    setOrgImportStatus('Informe o nome da org.', 'error');
+    return;
+  }
+  let auth = null;
+  if (method === 'json') {
+    try {
+      const parsedAuth = JSON.parse(await file.text());
+      const sfdxAuthUrl = parsedAuth?.sfdxAuthUrl || parsedAuth?.result?.sfdxAuthUrl;
+      if (typeof sfdxAuthUrl !== 'string' || !sfdxAuthUrl.trim()) {
+        setOrgImportStatus('O arquivo não contém uma sfdxAuthUrl válida.', 'error');
+        return;
+      }
+      auth = { sfdxAuthUrl: sfdxAuthUrl.trim() };
+    } catch (error) {
+      setOrgImportStatus('O arquivo selecionado não contém um JSON válido.', 'error');
+      return;
+    }
+  }
+
+  if (orgImportConfirm) orgImportConfirm.disabled = true;
+  setOrgImportStatus(
+    method === 'login'
+      ? 'Abrindo login pelo Salesforce CLI. Conclua a autenticação na janela do navegador…'
+      : 'Importando e validando o acesso com o Salesforce…'
+  );
+  try {
+    const response = await apiRequest(method === 'login' ? '/api/salesforce/orgs/login' : '/api/salesforce/orgs/import', {
+      method: 'POST',
+      body: JSON.stringify({
+        clientName,
+        orgName,
+        auth,
+        instanceUrl: orgLoginInstanceInput?.value.trim() || '',
+      }),
+    });
+    const payload = await response.json();
+    applySalesforceOrgsPayload(payload);
+    closeOrgImportModal();
+    window.alert(`Acesso conectado: ${clientName} - ${orgName}.`);
+  } catch (error) {
+    setOrgImportStatus(error.message || 'Não foi possível conectar o acesso.', 'error');
+  } finally {
+    auth = null;
+    if (orgImportConfirm) orgImportConfirm.disabled = false;
+  }
+};
+
 const getReplayUrlOverride = () => {
   const value = replayUrlInput ? replayUrlInput.value.trim() : '';
   return value ? normalizeUrl(value) : '';
@@ -1542,9 +1853,14 @@ const runButtonAction = async (button, action, fallbackMessage) => {
 };
 
 startBtn.addEventListener('click', async () => {
+  const url = normalizeUrl(urlInput.value.trim());
   await runButtonAction(
     startBtn,
-    () => apiRequest('/api/recording/start', { method: 'POST' }),
+    () =>
+      apiRequest('/api/recording/start', {
+        method: 'POST',
+        body: JSON.stringify({ url }),
+      }),
     'Não foi possível iniciar a gravação.'
   );
 });
@@ -1678,10 +1994,15 @@ if (execCasesBtn) {
 saveScenarioBtn.addEventListener('click', async () => {
   const name = scenarioNameInput.value.trim();
   const testCaseId = scenarioTestCaseIdInput ? scenarioTestCaseIdInput.value.trim() : '';
+  const salesforceOrgId = getActiveSalesforceOrgId();
+  if (testCaseId && !salesforceOrgId) {
+    window.alert('Selecione uma organização Salesforce antes de salvar um caso de teste.');
+    return;
+  }
   try {
     await apiRequest('/api/scenarios/save', {
       method: 'POST',
-      body: JSON.stringify({ name, testCaseId }),
+      body: JSON.stringify({ name, testCaseId, salesforceOrgId }),
     });
     scenarioNameInput.value = '';
     if (scenarioTestCaseIdInput) scenarioTestCaseIdInput.value = '';
@@ -1712,6 +2033,77 @@ openUrlBtn.addEventListener('click', async () => {
 urlInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') openUrlBtn.click();
 });
+
+if (orgSelectorBtn && orgOptions) {
+  orgSelectorBtn.addEventListener('click', () => {
+    setOrgOptionsOpen(orgSelectorBtn.getAttribute('aria-expanded') !== 'true');
+  });
+
+  if (orgClientOptions) {
+    orgClientOptions.addEventListener('click', (event) => {
+      const option = event.target.closest('button[data-org-client]');
+      if (!option || !orgClientOptions.contains(option)) return;
+      showOrgNamesForClient(option.dataset.orgClient || '');
+    });
+  }
+
+  if (orgNameOptions) {
+    orgNameOptions.addEventListener('click', async (event) => {
+      const option = event.target.closest('button[data-org-id]');
+      if (!option || !orgNameOptions.contains(option)) return;
+      await selectOrgOption(option.dataset.orgId || '', option);
+    });
+  }
+
+  if (orgBackToClientsBtn) {
+    orgBackToClientsBtn.addEventListener('click', () => showOrgClientOptions());
+  }
+
+  document.addEventListener('click', (event) => {
+    if (orgConnection && !orgConnection.contains(event.target)) {
+      setOrgOptionsOpen(false);
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && orgSelectorBtn.getAttribute('aria-expanded') === 'true') {
+      setOrgOptionsOpen(false);
+      orgSelectorBtn.focus();
+    }
+  });
+}
+
+if (importOrgAccessBtn) {
+  importOrgAccessBtn.addEventListener('click', () => {
+    void openOrgImportModal();
+  });
+}
+
+if (orgImportClientSelect) {
+  orgImportClientSelect.addEventListener('change', () => updateOrgImportClientField());
+}
+
+if (orgImportMethodJson) {
+  orgImportMethodJson.addEventListener('change', () => updateOrgImportMethod());
+}
+
+if (orgImportMethodLogin) {
+  orgImportMethodLogin.addEventListener('change', () => updateOrgImportMethod());
+}
+
+if (orgImportClose) {
+  orgImportClose.addEventListener('click', () => closeOrgImportModal());
+}
+
+if (orgImportCancel) {
+  orgImportCancel.addEventListener('click', () => closeOrgImportModal());
+}
+
+if (orgImportConfirm) {
+  orgImportConfirm.addEventListener('click', async () => {
+    await importOrgAccess();
+  });
+}
 
 scenarioNameInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') saveScenarioBtn.click();
@@ -2181,9 +2573,20 @@ if (cloudImportModal) {
   });
 }
 
+if (orgImportModal) {
+  orgImportModal.addEventListener('click', (event) => {
+    const closeTarget = event.target.closest('[data-action="close"]');
+    if (closeTarget) closeOrgImportModal();
+  });
+}
+
 if (typeof document !== 'undefined') {
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    if (orgImportModal && !orgImportModal.classList.contains('hidden')) {
+      closeOrgImportModal();
+      return;
+    }
     if (cloudImportModal && !cloudImportModal.classList.contains('hidden')) {
       closeCloudImportModal();
       return;
@@ -2268,3 +2671,6 @@ ws.addEventListener('message', (event) => {
 
 initializeTheme();
 setWorkspaceTab('main');
+void loadSalesforceOrgs().catch(() => {
+  if (selectedOrgLabel) selectedOrgLabel.textContent = 'Organizações indisponíveis';
+});
