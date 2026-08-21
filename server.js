@@ -85,6 +85,12 @@ const SALESFORCE_CLI_TIMEOUT_MS = (() => {
     ? configured
     : 60000;
 })();
+const SALESFORCE_AUTH_IMPORT_TIMEOUT_MS = (() => {
+  const configured = Number.parseInt(process.env.SALESFORCE_AUTH_IMPORT_TIMEOUT_MS, 10);
+  return Number.isInteger(configured) && configured >= 30000 && configured <= 600000
+    ? configured
+    : 300000;
+})();
 const SALESFORCE_WEB_LOGIN_TIMEOUT_MS = (() => {
   const configured = Number.parseInt(process.env.SALESFORCE_WEB_LOGIN_TIMEOUT_MS, 10);
   return Number.isInteger(configured) && configured >= 30000 && configured <= 600000
@@ -233,6 +239,14 @@ const quoteWindowsShellArg = (value) => {
   const normalized = String(value ?? '');
   return `"${normalized.replace(/"/g, '""')}"`;
 };
+const salesforceCliEnvironment = () => ({
+  ...process.env,
+  SF_DISABLE_LOG_FILE: process.env.SF_DISABLE_LOG_FILE || 'true',
+  SF_DISABLE_TELEMETRY: process.env.SF_DISABLE_TELEMETRY || 'true',
+  SF_LOG_LEVEL: process.env.SF_LOG_LEVEL || 'error',
+  NO_COLOR: process.env.NO_COLOR || '1',
+  CI: process.env.CI || '1',
+});
 
 const getQueueItemStatus = (id) => {
   const item = state.queue.find((q) => q.id === id);
@@ -259,14 +273,7 @@ const runSalesforceCli = async (args, options = {}) => {
     maxBuffer: SALESFORCE_CLI_MAX_BUFFER,
     timeout: SALESFORCE_CLI_TIMEOUT_MS,
     windowsHide: true,
-    env: {
-      ...process.env,
-      SF_DISABLE_LOG_FILE: process.env.SF_DISABLE_LOG_FILE || 'true',
-      SF_DISABLE_TELEMETRY: process.env.SF_DISABLE_TELEMETRY || 'true',
-      SF_LOG_LEVEL: process.env.SF_LOG_LEVEL || 'error',
-      NO_COLOR: process.env.NO_COLOR || '1',
-      CI: process.env.CI || '1',
-    },
+    env: salesforceCliEnvironment(),
     ...options,
   };
 
@@ -297,34 +304,22 @@ const extractSalesforceCliErrorDetails = (stdout, stderr) => {
   }
   return { name: '', message: redactSalesforceCliMessage(sources.join('\n')) };
 };
-const runSalesforceCliWithStdin = (args, input) =>
+const runSalesforceCliWithStdin = (args, input, options = {}) =>
   new Promise((resolve, reject) => {
     const command = resolveSalesforceCliCommand();
     const resolvedArgs = Array.isArray(args) ? args : [];
+    const timeoutMs =
+      Number.isInteger(options.timeout) && options.timeout > 0 ? options.timeout : SALESFORCE_CLI_TIMEOUT_MS;
     const spawnOptions = {
       windowsHide: true,
-      env: {
-        ...process.env,
-        SF_DISABLE_LOG_FILE: process.env.SF_DISABLE_LOG_FILE || 'true',
-        SF_DISABLE_TELEMETRY: process.env.SF_DISABLE_TELEMETRY || 'true',
-        SF_LOG_LEVEL: process.env.SF_LOG_LEVEL || 'error',
-        NO_COLOR: process.env.NO_COLOR || '1',
-        CI: process.env.CI || '1',
-      },
+      env: salesforceCliEnvironment(),
+      shell: process.platform === 'win32',
     };
-    const child =
-      process.platform === 'win32'
-        ? spawn(
-            process.env.ComSpec || 'cmd.exe',
-            [
-              '/d',
-              '/s',
-              '/c',
-              [quoteWindowsShellArg(command), ...resolvedArgs.map(quoteWindowsShellArg)].join(' '),
-            ],
-            spawnOptions
-          )
-        : spawn(command, resolvedArgs, spawnOptions);
+    const child = spawn(
+      process.platform === 'win32' ? quoteWindowsShellArg(command) : command,
+      resolvedArgs,
+      spawnOptions
+    );
     let stdout = '';
     let stderr = '';
     let outputBytes = 0;
@@ -371,7 +366,7 @@ const runSalesforceCliWithStdin = (args, input) =>
       error.code = 'ETIMEDOUT';
       child.kill();
       settle(reject, error);
-    }, SALESFORCE_CLI_TIMEOUT_MS);
+    }, timeoutMs);
     child.stdin?.on('error', () => {});
     child.stdin?.end(`${String(input || '')}\n`);
   });
@@ -2180,9 +2175,9 @@ const assertLocalCredentialImport = (req) => {
   error.statusCode = 403;
   throw error;
 };
-const verifySalesforceOrgAccess = async (alias) => {
+const verifySalesforceOrgAccess = async (alias, options = {}) => {
   try {
-    await runSalesforceCli(['org', 'display', '--target-org', alias, '--json']);
+    await runSalesforceCli(['org', 'display', '--target-org', alias, '--json'], options);
   } catch (error) {
     const safeError = new Error('Não foi possível conectar à org selecionada. Importe um acesso válido e tente novamente.');
     safeError.statusCode = error.code === 'ENOENT' ? 500 : 502;
@@ -2257,9 +2252,10 @@ const importSalesforceOrgAccess = async ({ clientName, orgName, auth }) => {
     try {
       await runSalesforceCliWithStdin(
         ['org', 'login', 'sfdx-url', '--alias', alias, '--json', '--sfdx-url-stdin'],
-        sfdxAuthUrl
+        sfdxAuthUrl,
+        { timeout: SALESFORCE_AUTH_IMPORT_TIMEOUT_MS }
       );
-      await verifySalesforceOrgAccess(alias);
+      await verifySalesforceOrgAccess(alias, { timeout: SALESFORCE_AUTH_IMPORT_TIMEOUT_MS });
     } catch (error) {
       if (error.statusCode === 400) throw error;
       const safeError = new Error(salesforceImportErrorMessage(error));
